@@ -1215,7 +1215,10 @@ class PyRanges(RangeFrame):
 
         Note
         ----
-        The indices of the two input PyRanges are not preserved in output.
+        The index of the output is taken from the primary side of the join: ``self`` for
+        "inner", "left" and "outer", and ``other`` for "right". As a result the index may
+        contain duplicates (when an interval has several overlaps) and, for "outer"/"right",
+        missing-side rows keep the index of the side they originate from.
         The chromosome column from other will never be reported as it is always the same as in self.
         Whether the strand column from other is reported depends on the strand_behavior.
 
@@ -1278,11 +1281,11 @@ class PyRanges(RangeFrame):
           index  |    Chromosome        Start        End  Name         Start_b      End_b  Name_b
           int64  |    str             float64    float64  str          float64    float64  str
         -------  ---  ------------  ---------  ---------  ---------  ---------  ---------  --------
-              1  |    chr1                  5          7  interval2          6          7  b
+              2  |    chr1                  5          7  interval2          6          7  b
               0  |    chr1                  3          6  interval1        nan        nan  nan
               1  |    chr1                  8          9  interval3        nan        nan  nan
               0  |    nan                 nan        nan  nan                1          2  a
-        PyRanges with 4 rows, 7 columns, and 1 index columns (with 2 index duplicates).
+        PyRanges with 4 rows, 7 columns, and 1 index columns (with 1 index duplicates).
         Contains 1 chromosomes.
         Invalid ranges:
           * 1 starts or ends are nan. See indexes: 0
