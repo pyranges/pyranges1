@@ -572,7 +572,7 @@ of the overlapping intervals, similar to a SQL join operation:
     index  |    Chromosome           Start      End  Strand      ID                  Start_b    End_b  ID_b
     int64  |    category             int64    int64  category    str                   int64    int64  str
   -------  ---  -----------------  -------  -------  ----------  ----------------  ---------  -------  ----------------
-       15  |    CAJFCJ010000025.1     2755     3055  -           cds-CAD5125115.1       2753     2851  cds-CAD5125114.1
+      135  |    CAJFCJ010000025.1     2755     3055  -           cds-CAD5125115.1       2753     2851  cds-CAD5125114.1
   PyRanges with 1 rows, 8 columns, and 1 index columns.
   Contains 1 chromosomes and 1 strands.
 
@@ -581,8 +581,8 @@ The object ``j`` contains the columns of both objects, with the suffix "_b" to d
 It may be a bit too wide for our taste. Let's just look at a few columns to understand the overlap:
 
   >>> j[['ID', 'Start', 'End', 'ID_b', 'Start_b', 'End_b']]
-                    ID  Start   End              ID_b  Start_b  End_b
-  15  cds-CAD5125115.1   2755  3055  cds-CAD5125114.1     2753   2851
+                     ID  Start   End              ID_b  Start_b  End_b
+  135  cds-CAD5125115.1   2755  3055  cds-CAD5125114.1     2753   2851
 
 Above, we used a pandas syntax to select columns. Because the returned object does not have all genomic location
 columns, it is a pandas DataFrame.
