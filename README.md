@@ -22,6 +22,10 @@ available at https://pyranges1.readthedocs.io/
 ## Recent Changelog
 
 ```
+# 1.3.9 (30.05.26)
+- fix `join_overlaps` duplicating rows in `left`/`outer` joins when the input index did not start at 0
+- preserve the input index in `join_overlaps` output (self for inner/left/outer, other for right), consistent with `overlap`/`nearest_ranges`
+
 # 1.3.8 (21.04.26)
 - repo name changed from pyranges_1.x to pyranges1
 - updated references to it
