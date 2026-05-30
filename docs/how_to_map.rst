@@ -424,15 +424,15 @@ by pairing (overlapping) CDS and exon intervals with the same ``Parent`` value:
   index    |    Chromosome             Start    End      Strand    Feature
   int64    |    str                    int64    int64    str       category
   -------  ---  ---------------------  -------  -------  --------  ----------
-  0        |    rna-DGYR_LOCUS13733    1        382      +         CDS
-  1        |    rna-DGYR_LOCUS13734    258      484      +         CDS
-  2        |    rna-DGYR_LOCUS13734    484      625      +         CDS
-  3        |    rna-DGYR_LOCUS13734    625      798      +         CDS
+  4        |    rna-DGYR_LOCUS13733    1        382      +         CDS
+  11       |    rna-DGYR_LOCUS13734    258      484      +         CDS
+  12       |    rna-DGYR_LOCUS13734    484      625      +         CDS
+  13       |    rna-DGYR_LOCUS13734    625      798      +         CDS
   ...      |    ...                    ...      ...      ...       ...
-  52       |    rna-DGYR_LOCUS12552-2  139      237      +         CDS
-  53       |    rna-DGYR_LOCUS12552-2  237      337      +         CDS
-  54       |    rna-DGYR_LOCUS12552-2  337      520      +         CDS
-  55       |    rna-DGYR_LOCUS12552-2  520      640      +         CDS
+  146      |    rna-DGYR_LOCUS12552-2  139      237      +         CDS
+  147      |    rna-DGYR_LOCUS12552-2  237      337      +         CDS
+  148      |    rna-DGYR_LOCUS12552-2  337      520      +         CDS
+  149      |    rna-DGYR_LOCUS12552-2  520      640      +         CDS
   PyRanges with 56 rows, 5 columns, and 1 index columns.
   Contains 17 chromosomes and 1 strands.
 
@@ -440,11 +440,11 @@ by pairing (overlapping) CDS and exon intervals with the same ``Parent`` value:
     index  |    Chromosome               Start      End  Strand    Feature
     int64  |    str                      int64    int64  str       category
   -------  ---  ---------------------  -------  -------  --------  ----------
-       51  |    rna-DGYR_LOCUS12552-2       97      139  +         CDS
-       52  |    rna-DGYR_LOCUS12552-2      139      237  +         CDS
-       53  |    rna-DGYR_LOCUS12552-2      237      337  +         CDS
-       54  |    rna-DGYR_LOCUS12552-2      337      520  +         CDS
-       55  |    rna-DGYR_LOCUS12552-2      520      640  +         CDS
+      145  |    rna-DGYR_LOCUS12552-2       97      139  +         CDS
+      146  |    rna-DGYR_LOCUS12552-2      139      237  +         CDS
+      147  |    rna-DGYR_LOCUS12552-2      237      337  +         CDS
+      148  |    rna-DGYR_LOCUS12552-2      337      520  +         CDS
+      149  |    rna-DGYR_LOCUS12552-2      520      640  +         CDS
   PyRanges with 5 rows, 5 columns, and 1 index columns.
   Contains 1 chromosomes and 1 strands.
 
@@ -454,15 +454,15 @@ With the similar logic, we can easily map the start and stop codon positions to 
   index    |    Chromosome             Start    End      Strand    Feature
   int64    |    str                    int64    int64    str       str
   -------  ---  ---------------------  -------  -------  --------  ---------
-  0        |    rna-DGYR_LOCUS13733    1        4        +         start
-  1        |    rna-DGYR_LOCUS13734    258      261      +         start
-  2        |    rna-DGYR_LOCUS13734    484      487      +         start
-  3        |    rna-DGYR_LOCUS13734    625      628      +         start
+  4        |    rna-DGYR_LOCUS13733    1        4        +         start
+  11       |    rna-DGYR_LOCUS13734    258      261      +         start
+  12       |    rna-DGYR_LOCUS13734    484      487      +         start
+  13       |    rna-DGYR_LOCUS13734    625      628      +         start
   ...      |    ...                    ...      ...      ...       ...
-  52       |    rna-DGYR_LOCUS12552-2  139      142      +         start
-  53       |    rna-DGYR_LOCUS12552-2  237      240      +         start
-  54       |    rna-DGYR_LOCUS12552-2  337      340      +         start
-  55       |    rna-DGYR_LOCUS12552-2  520      523      +         start
+  146      |    rna-DGYR_LOCUS12552-2  139      142      +         start
+  147      |    rna-DGYR_LOCUS12552-2  237      240      +         start
+  148      |    rna-DGYR_LOCUS12552-2  337      340      +         start
+  149      |    rna-DGYR_LOCUS12552-2  520      523      +         start
   PyRanges with 56 rows, 5 columns, and 1 index columns.
   Contains 17 chromosomes and 1 strands.
 
@@ -470,14 +470,14 @@ With the similar logic, we can easily map the start and stop codon positions to 
   index    |    Chromosome             Start    End      Strand    Feature
   int64    |    str                    int64    int64    str       str
   -------  ---  ---------------------  -------  -------  --------  ---------
-  0        |    rna-DGYR_LOCUS13733    379      382      +         stop
-  1        |    rna-DGYR_LOCUS13734    481      484      +         stop
-  2        |    rna-DGYR_LOCUS13734    622      625      +         stop
-  3        |    rna-DGYR_LOCUS13734    795      798      +         stop
+  4        |    rna-DGYR_LOCUS13733    379      382      +         stop
+  11       |    rna-DGYR_LOCUS13734    481      484      +         stop
+  12       |    rna-DGYR_LOCUS13734    622      625      +         stop
+  13       |    rna-DGYR_LOCUS13734    795      798      +         stop
   ...      |    ...                    ...      ...      ...       ...
-  52       |    rna-DGYR_LOCUS12552-2  234      237      +         stop
-  53       |    rna-DGYR_LOCUS12552-2  334      337      +         stop
-  54       |    rna-DGYR_LOCUS12552-2  517      520      +         stop
-  55       |    rna-DGYR_LOCUS12552-2  637      640      +         stop
+  146      |    rna-DGYR_LOCUS12552-2  234      237      +         stop
+  147      |    rna-DGYR_LOCUS12552-2  334      337      +         stop
+  148      |    rna-DGYR_LOCUS12552-2  517      520      +         stop
+  149      |    rna-DGYR_LOCUS12552-2  637      640      +         stop
   PyRanges with 56 rows, 5 columns, and 1 index columns.
   Contains 17 chromosomes and 1 strands.

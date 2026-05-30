@@ -366,7 +366,8 @@ class RangeFrame(pd.DataFrame):
         -------
         RangeFrame
             A new RangeFrame containing the joined intervals with columns from both input RangeFrames.
-            The indices of the input RangeFrames are not preserved in the output.
+            The output keeps the index of the primary side of the join (``self`` for inner/left/outer
+            joins, ``other`` for right joins), so it may contain duplicates.
 
         Notes
         -----
