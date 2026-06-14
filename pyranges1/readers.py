@@ -1,7 +1,7 @@
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import gtfreader
 import pandas as pd
@@ -531,3 +531,440 @@ def read_bigwig(f: str | Path) -> "PyRanges":
         )
 
     return ensure_pyranges(pd.concat(dfs).reset_index(drop=True))
+
+
+# Minimum number of tab-separated fields in a 4DN .pairs record
+# (readID, chr1, pos1, chr2, pos2, strand1, strand2).
+_PAIRS_MIN_FIELDS = 7
+
+# The first three BigBed autoSql fields are always the coordinate columns
+# (Chromosome, Start, End); any further fields are optional metadata columns.
+_BED_COORD_NCOLS = 3
+
+# autoSql field name -> PyRanges column name, for the optional columns embedded
+# in a BigBed's SQL schema (the first three are always Chromosome/Start/End).
+_BIGBED_AUTOSQL_TO_PYRANGES = {
+    "name": "Name",
+    "score": "Score",
+    "strand": "Strand",
+    "thickStart": "ThickStart",
+    "thickEnd": "ThickEnd",
+    "itemRgb": "ItemRGB",
+    "blockCount": "BlockCount",
+    "blockSizes": "BlockSizes",
+    "blockStarts": "BlockStarts",
+}
+
+
+def _read_pysam_alignment(
+    f: "str | Path",
+    mode: Literal["r", "rc"],
+    mapq: int,
+    required_flag: int,
+    filter_flag: int,
+    reference_filename: "str | Path | None",
+    *,
+    sparse: bool,
+) -> "PyRanges":
+    """Read a SAM/CRAM file via pysam into a PyRanges.
+
+    Shared backend for :func:`read_sam` (``mode="r"``) and :func:`read_cram`
+    (``mode="rc"``). The output schema matches :func:`read_bam`: sparse reads
+    return ``Chromosome, Start, End, Strand, Flag``; full reads additionally
+    return ``QueryStart, QueryEnd, QuerySequence, Name, Cigar, Quality``.
+    Unmapped reads are always skipped.
+    """
+    try:
+        import pysam  # type: ignore[import]
+    except ImportError:
+        LOGGER.exception(
+            "pysam must be installed to read SAM/CRAM files. "
+            "Use `conda install -c bioconda pysam` or `pip install pysam`.",
+        )
+        sys.exit(1)
+
+    open_kwargs: dict = {}
+    if reference_filename is not None:
+        open_kwargs["reference_filename"] = str(reference_filename)
+
+    chromosomes: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    strands: list[str] = []
+    flags: list[int] = []
+    query_starts: list[int] = []
+    query_ends: list[int] = []
+    query_seqs: list[str | None] = []
+    names: list[str | None] = []
+    cigars: list[str | None] = []
+    quals: list[str | None] = []
+
+    with pysam.AlignmentFile(str(f), mode, **open_kwargs) as af:
+        for read in af:
+            if read.is_unmapped or read.mapping_quality < mapq:
+                continue
+            if required_flag and (read.flag & required_flag) != required_flag:
+                continue
+            if read.flag & filter_flag:
+                continue
+            end = read.reference_end
+            if end is None:
+                continue
+            chromosomes.append(read.reference_name or "")
+            starts.append(read.reference_start)
+            ends.append(end)
+            strands.append("-" if read.is_reverse else "+")
+            flags.append(read.flag)
+            if not sparse:
+                query_starts.append(read.query_alignment_start)
+                query_ends.append(read.query_alignment_end)
+                query_seqs.append(read.query_sequence)
+                names.append(read.query_name)
+                cigars.append(read.cigarstring)
+                quals.append(
+                    "".join(chr(q + 33) for q in read.query_qualities) if read.query_qualities is not None else None,
+                )
+
+    data: dict = {
+        "Chromosome": pd.Categorical(chromosomes),
+        "Start": starts,
+        "End": ends,
+        "Strand": pd.Categorical(strands),
+        "Flag": pd.Series(flags, dtype="uint16"),
+    }
+    if not sparse:
+        data["QueryStart"] = query_starts
+        data["QueryEnd"] = query_ends
+        data["QuerySequence"] = query_seqs
+        data["Name"] = names
+        data["Cigar"] = cigars
+        data["Quality"] = quals
+
+    return ensure_pyranges(pd.DataFrame(data))
+
+
+def read_sam(
+    f: "str | Path",
+    /,
+    mapq: int = 0,
+    required_flag: int = 0,
+    filter_flag: int = 1540,
+    *,
+    sparse: bool = True,
+) -> "PyRanges":
+    """Return SAM file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to SAM file.
+
+    mapq : int, default 0
+        Minimum mapping quality score. Reads below this are skipped.
+
+    required_flag : int, default 0
+        Flags which must all be present for the read to be kept (0 = no requirement).
+
+    filter_flag : int, default 1540
+        Ignore reads with any of these flags. Default 1540 = unmapped (4) +
+        QC-fail (512) + PCR/optical duplicate (1024).
+
+    sparse : bool, default True
+        Whether to return only the columns Chromosome, Start, End, Strand, Flag.
+        Set to False to additionally return QueryStart, QueryEnd, QuerySequence,
+        Name, Cigar, Quality (more time consuming).
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    This functionality requires the library ``pysam``. It can be installed with
+    ``pip install pysam`` or ``conda install -c bioconda pysam``. Unmapped reads
+    are always skipped. The output mirrors :func:`read_bam`.
+
+    See Also
+    --------
+    pyranges1.read_bam : read alignments from a BAM file
+    pyranges1.read_cram : read alignments from a CRAM file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr  # doctest: +SKIP
+    >>> pr.read_sam("reads.sam")  # doctest: +SKIP
+
+    """
+    return _read_pysam_alignment(f, "r", mapq, required_flag, filter_flag, None, sparse=sparse)
+
+
+def read_cram(
+    f: "str | Path",
+    /,
+    mapq: int = 0,
+    required_flag: int = 0,
+    filter_flag: int = 1540,
+    *,
+    sparse: bool = True,
+    reference_filename: "str | Path | None" = None,
+) -> "PyRanges":
+    """Return CRAM file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to CRAM file.
+
+    mapq : int, default 0
+        Minimum mapping quality score. Reads below this are skipped.
+
+    required_flag : int, default 0
+        Flags which must all be present for the read to be kept (0 = no requirement).
+
+    filter_flag : int, default 1540
+        Ignore reads with any of these flags. Default 1540 = unmapped (4) +
+        QC-fail (512) + PCR/optical duplicate (1024).
+
+    sparse : bool, default True
+        Whether to return only the columns Chromosome, Start, End, Strand, Flag.
+        Set to False to additionally return QueryStart, QueryEnd, QuerySequence,
+        Name, Cigar, Quality (more time consuming).
+
+    reference_filename : str or Path, optional
+        Path to the reference FASTA used during CRAM encoding. Required to
+        reconstruct sequence/quality (``sparse=False``) or when the CRAM's
+        ``@SQ UR:`` header tag does not point to an accessible reference.
+        Coordinate-only reads (``sparse=True``) can often be decoded without it.
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    This functionality requires the library ``pysam``. It can be installed with
+    ``pip install pysam`` or ``conda install -c bioconda pysam``. Unmapped reads
+    are always skipped. The output mirrors :func:`read_bam`.
+
+    See Also
+    --------
+    pyranges1.read_bam : read alignments from a BAM file
+    pyranges1.read_sam : read alignments from a SAM file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr  # doctest: +SKIP
+    >>> pr.read_cram("reads.cram", reference_filename="genome.fa")  # doctest: +SKIP
+
+    """
+    return _read_pysam_alignment(f, "rc", mapq, required_flag, filter_flag, reference_filename, sparse=sparse)
+
+
+def read_bigbed(f: "str | Path") -> "PyRanges":
+    """Return BigBed file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to BigBed (.bb) file.
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    This functionality requires the library ``pyBigWig`` (``pip install pyBigWig``).
+    Column names beyond Chromosome/Start/End are taken from the autoSql schema
+    embedded in the BigBed; the conventional BED field names map back to PyRanges
+    columns (``name`` -> ``Name``, ``strand`` -> ``Strand`` ...).
+
+    See Also
+    --------
+    pyranges1.read_bigwig : read signal values from a BigWig file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr  # doctest: +SKIP
+    >>> pr.read_bigbed("annotations.bb")  # doctest: +SKIP
+
+    """
+    try:
+        import pyBigWig  # type: ignore[import]
+    except ModuleNotFoundError:
+        LOGGER.exception(
+            "pyBigWig must be installed to read BigBed files. Use `pip install pyBigWig` to install it.",
+        )
+        sys.exit(1)
+
+    import re
+    from io import StringIO
+
+    bb = pyBigWig.open(str(Path(f)))
+    sql = bb.SQL() or ""
+    if isinstance(sql, bytes):
+        sql = sql.decode("ascii")
+
+    col_names = [
+        _BIGBED_AUTOSQL_TO_PYRANGES.get(m.group(1), m.group(1))
+        for line in sql.splitlines()
+        if (m := re.match(r"\s*[A-Za-z_]\w*(?:\[[^\]]*\])?\s+`?(\w+)`?\s*;", line))
+    ]
+
+    rows: list[tuple] = []
+    for chrom, chrom_len in bb.chroms().items():
+        entries = bb.entries(chrom, 0, chrom_len)
+        if entries:
+            rows.extend((chrom, beg, end, rest) for beg, end, rest in entries)
+
+    if not rows:
+        empty: dict = {
+            "Chromosome": pd.Series([], dtype="category"),
+            "Start": pd.Series([], dtype="int64"),
+            "End": pd.Series([], dtype="int64"),
+        }
+        return ensure_pyranges(pd.DataFrame(empty))
+
+    coords = pd.DataFrame(
+        {
+            "Chromosome": pd.Categorical([r[0] for r in rows]),
+            "Start": [r[1] for r in rows],
+            "End": [r[2] for r in rows],
+        },
+    )
+
+    extra_cols = col_names[_BED_COORD_NCOLS:] if len(col_names) > _BED_COORD_NCOLS else []
+    if extra_cols:
+        meta_text = "\n".join(r[3] for r in rows if r[3] is not None)
+        meta = pd.read_csv(StringIO(meta_text), sep="\t", names=extra_cols, header=None)
+        df = pd.concat([coords.reset_index(drop=True), meta.reset_index(drop=True)], axis=1)
+    else:
+        df = coords
+
+    if "Strand" in df.columns:
+        df["Strand"] = df["Strand"].astype("category")
+
+    return ensure_pyranges(df)
+
+
+def read_pairs(
+    f: "str | Path",
+    /,
+    nrows: int | None = None,
+    anchor: str = "1",
+) -> "PyRanges":
+    r"""Return a 4DN Hi-C ``.pairs`` / ``.pairs.gz`` file as PyRanges.
+
+    The 4DN pairs format is a TSV with a ``#``-prefixed header block followed by
+    records ``readID, chr1, pos1, chr2, pos2, strand1, strand2``. Each Hi-C
+    contact is a pair of point coordinates; this reader keeps both mates on a
+    single row, promoting one mate (the *anchor*) to the canonical
+    ``Chromosome / Start / End / Strand`` columns and demoting the other to
+    ``OtherChromosome / OtherStart / OtherEnd / OtherStrand``. Point positions
+    become single-base intervals (``End = Start + 1``).
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to a ``.pairs`` or ``.pairs.gz`` file.
+
+    nrows : int, optional
+        Stop after reading this many records. Default None (all).
+
+    anchor : ``"1"`` or ``"2"``, default ``"1"``
+        Which mate of the pair becomes the genomic columns
+        (``Chromosome / Start / End / Strand``). The other mate is kept in the
+        ``Other*`` columns. Downstream PyRanges operations act on the anchor mate.
+
+    Returns
+    -------
+    PyRanges
+        Columns ``Chromosome, Start, End, Strand, OtherChromosome, OtherStart,
+        OtherEnd, OtherStrand, ReadID``.
+
+    Notes
+    -----
+    The ``pos`` fields are 1-based per the 4DN spec; this reader subtracts 1 so
+    coordinates are stored 0-based (Start included, End excluded), consistent
+    with the rest of PyRanges.
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> contents = '''## pairs format v1.0
+    ... #columns: readID chr1 pos1 chr2 pos2 strand1 strand2
+    ... r1\tchr1\t100\tchr2\t200\t+\t-
+    ... r2\tchr1\t150\tchr1\t900\t-\t+'''
+    >>> tmp = NamedTemporaryFile("w", suffix=".pairs")
+    >>> _ = tmp.write(contents)
+    >>> tmp.flush()
+    >>> gr = pr.read_pairs(tmp.name)
+    >>> list(gr.columns)
+    ['Chromosome', 'Start', 'End', 'Strand', 'OtherChromosome', 'OtherStart', 'OtherEnd', 'OtherStrand', 'ReadID']
+    >>> gr["Start"].tolist()
+    [99, 149]
+    >>> gr["OtherStart"].tolist()
+    [199, 899]
+    >>> pr.read_pairs(tmp.name, anchor="2")["Start"].tolist()
+    [199, 899]
+
+    """
+    if anchor not in ("1", "2"):
+        msg = f"anchor must be '1' or '2', got {anchor!r}"
+        raise ValueError(msg)
+
+    path = Path(f)
+    read_ids: list[str] = []
+    chr1: list[str] = []
+    pos1: list[int] = []
+    chr2: list[str] = []
+    pos2: list[int] = []
+    strand1: list[str] = []
+    strand2: list[str] = []
+
+    import gzip
+
+    opener = gzip.open if path.name.endswith(".gz") else open
+
+    n = 0
+    with opener(path, "rt") as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < _PAIRS_MIN_FIELDS:
+                continue
+            read_ids.append(parts[0])
+            chr1.append(parts[1])
+            pos1.append(int(parts[2]) - 1)
+            chr2.append(parts[3])
+            pos2.append(int(parts[4]) - 1)
+            strand1.append(parts[5])
+            strand2.append(parts[6])
+            n += 1
+            if nrows is not None and n >= nrows:
+                break
+
+    if anchor == "1":
+        a_chrom, a_pos, a_strand = chr1, pos1, strand1
+        o_chrom, o_pos, o_strand = chr2, pos2, strand2
+    else:
+        a_chrom, a_pos, a_strand = chr2, pos2, strand2
+        o_chrom, o_pos, o_strand = chr1, pos1, strand1
+
+    df = pd.DataFrame(
+        {
+            "Chromosome": pd.Categorical(a_chrom),
+            "Start": a_pos,
+            "End": [p + 1 for p in a_pos],
+            "Strand": pd.Categorical(a_strand),
+            "OtherChromosome": pd.Categorical(o_chrom),
+            "OtherStart": o_pos,
+            "OtherEnd": [p + 1 for p in o_pos],
+            "OtherStrand": pd.Categorical(o_strand),
+            "ReadID": read_ids,
+        },
+    )
+
+    return ensure_pyranges(df)
