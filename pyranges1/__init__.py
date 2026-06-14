@@ -14,6 +14,16 @@ from pyranges1.core.version import __version__  # noqa: F401
 from pyranges1.methods.concat import concat  # noqa: F401
 from pyranges1.methods.tile_genome import tile_genome  # noqa: F401
 from pyranges1.range_frame.range_frame import RangeFrame  # noqa: F401
-from pyranges1.readers import from_string, read_bam, read_bed, read_bigwig, read_gff3, read_gtf  # noqa: F401
+from pyranges1.readers import (  # noqa: F401
+    from_string,
+    read_bam,
+    read_bed,
+    read_bigwig,
+    read_gff3,
+    read_gtf,
+    read_narrowPeak,
+    read_parquet,
+    read_vcf,
+)
 
 read_gff = read_gtf

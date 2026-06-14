@@ -36,6 +36,8 @@ dependencies = ["pandas", "tabulate", "natsort", "ruranges>=0.1.4", "gtfreader>=
 add-ons = [
     "pyrle >= 0.0.43",
     "bamread",
+    "pysam",
+    "pyarrow",
     "pyfaidx",
     "pyBigWig",
     "joblib",

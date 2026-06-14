@@ -531,3 +531,243 @@ def read_bigwig(f: str | Path) -> "PyRanges":
         )
 
     return ensure_pyranges(pd.concat(dfs).reset_index(drop=True))
+
+
+# ENCODE narrowPeak is BED6 + 4 fixed extra columns (MACS2/MACS3 output).
+_NARROWPEAK_COLUMNS = [
+    "Chromosome",
+    "Start",
+    "End",
+    "Name",
+    "Score",
+    "Strand",
+    "SignalValue",
+    "PValue",
+    "QValue",
+    "Peak",
+]
+
+
+def read_narrowPeak(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":  # noqa: N802
+    r"""Return ENCODE narrowPeak (BED6+4) file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to narrowPeak file (may be gzip-compressed).
+
+    nrows : int, default None
+        Number of rows to read. Default None (all).
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    Columns: Chromosome, Start, End, Name, Score, Strand, SignalValue, PValue,
+    QValue, Peak. This is the format produced by MACS2/MACS3 and used by ENCODE.
+    ``#``-prefixed track/comment lines are skipped.
+
+    See Also
+    --------
+    pyranges1.read_bed : read a plain BED file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".narrowPeak")
+    >>> _ = tmp.write("chr1\t100\t200\tpeak1\t500\t+\t5.5\t3.2\t2.1\t50\n")
+    >>> tmp.flush()
+    >>> gr = pr.read_narrowPeak(tmp.name)
+    >>> list(gr.columns)
+    ['Chromosome', 'Start', 'End', 'Name', 'Score', 'Strand', 'SignalValue', 'PValue', 'QValue', 'Peak']
+    >>> gr["Start"].tolist(), gr["End"].tolist()
+    ([100], [200])
+    >>> gr["SignalValue"].tolist(), gr["Peak"].tolist()
+    ([5.5], [50])
+
+    """
+    df = pd.read_csv(
+        Path(f),
+        sep="\t",
+        header=None,
+        names=_NARROWPEAK_COLUMNS,
+        nrows=nrows,
+        comment="#",
+        dtype={"Chromosome": "category", "Strand": "category"},
+    )
+    return ensure_pyranges(df)
+
+
+def read_parquet(
+    f: "str | Path",
+    /,
+    columns: list[str] | None = None,
+    **kwargs,
+) -> "PyRanges":
+    """Return a Parquet file as PyRanges.
+
+    Parquet preserves column dtypes and loads much faster than CSV-based formats.
+    Any Parquet file with at least ``Chromosome``, ``Start``, ``End`` columns can
+    be read; use :meth:`PyRanges.to_parquet` to write one.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to the Parquet file.
+
+    columns : list of str, optional
+        Subset of columns to load. None (default) loads all columns. Must include
+        at least Chromosome, Start, End.
+
+    **kwargs
+        Forwarded to :func:`pandas.read_parquet` (e.g. ``engine``, ``filters``).
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    This functionality requires a Parquet engine, e.g. ``pyarrow``
+    (``pip install pyarrow``). ``Chromosome`` and ``Strand`` are restored as
+    ``category`` dtype if they are not already categorical.
+
+    See Also
+    --------
+    PyRanges.to_parquet : write a PyRanges to Parquet
+
+    Examples
+    --------
+    >>> import pyranges1 as pr  # doctest: +SKIP
+    >>> pr.read_parquet("intervals.parquet")  # doctest: +SKIP
+
+    """
+    try:
+        df = pd.read_parquet(Path(f), columns=columns, **kwargs)
+    except ImportError:
+        LOGGER.exception(
+            "A Parquet engine must be installed to read Parquet files. Use `pip install pyarrow` to install one.",
+        )
+        sys.exit(1)
+
+    for col in ("Chromosome", "Strand"):
+        if col in df.columns and not isinstance(df[col].dtype, pd.CategoricalDtype):
+            df[col] = df[col].astype("category")
+
+    return ensure_pyranges(df)
+
+
+def _flatten_vcf_info(value: object) -> object:
+    """Collapse a multi-valued VCF INFO field (a tuple) to a comma-joined string."""
+    if isinstance(value, (tuple, list)):
+        return ",".join("" if v is None else str(v) for v in value)
+    return value
+
+
+def read_vcf(
+    f: "str | Path",
+    /,
+    region: str | None = None,
+    nrows: int | None = None,
+    info_fields: list[str] | None = None,
+) -> "PyRanges":
+    """Return a VCF/BCF file as PyRanges.
+
+    Each variant becomes one row spanning its REF allele: ``Start`` is the 0-based
+    position (``POS - 1``) and ``End = Start + len(REF)``. Multi-allelic records
+    keep their ALT alleles comma-joined in a single row.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to a VCF / VCF.gz / BCF file.
+
+    region : str, optional
+        Restrict to a region, e.g. ``"chr1:1000-2000"`` (requires a tabix/CSI index).
+
+    nrows : int, optional
+        Stop after this many records. Default None (all).
+
+    info_fields : list of str, optional
+        Which INFO fields to expand into columns. None (default) expands every
+        INFO field present; pass an explicit list (possibly empty) to restrict.
+
+    Returns
+    -------
+    PyRanges
+        Columns: Chromosome, Start, End, ID, REF, ALT, QUAL, FILTER, plus one
+        column per requested INFO field.
+
+    Notes
+    -----
+    This functionality requires the library ``pysam`` (``pip install pysam`` or
+    ``conda install -c bioconda pysam``).
+
+    Examples
+    --------
+    >>> import pyranges1 as pr  # doctest: +SKIP
+    >>> pr.read_vcf("variants.vcf.gz", region="chr1:1-100000")  # doctest: +SKIP
+
+    """
+    try:
+        import pysam  # type: ignore[import]
+    except ImportError:
+        LOGGER.exception(
+            "pysam must be installed to read VCF/BCF files. "
+            "Use `conda install -c bioconda pysam` or `pip install pysam`.",
+        )
+        sys.exit(1)
+
+    vf = pysam.VariantFile(str(Path(f)))
+    iterator = vf.fetch(region=region) if region else vf
+
+    chroms: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    ids: list[str | None] = []
+    refs: list[str] = []
+    alts: list[str | None] = []
+    quals: list[float | None] = []
+    filters: list[str] = []
+    info_cols: dict[str, list] = {}
+
+    for n, rec in enumerate(iterator):
+        if nrows is not None and n >= nrows:
+            break
+        chroms.append(rec.chrom)
+        starts.append(int(rec.start))
+        ends.append(int(rec.stop))
+        ids.append(rec.id)
+        refs.append(rec.ref or "")
+        alts.append(",".join(a for a in rec.alts if a is not None) if rec.alts else None)
+        quals.append(rec.qual)
+        filters.append(",".join(str(k) for k in rec.filter) if rec.filter else "PASS")
+
+        keys = info_fields if info_fields is not None else list(rec.info.keys())
+        for k in keys:
+            info_cols.setdefault(k, [None] * n).append(
+                _flatten_vcf_info(rec.info[k]) if k in rec.info else None,
+            )
+        for k, col in info_cols.items():
+            if k not in keys:
+                col.append(None)
+
+    df = pd.DataFrame(
+        {
+            "Chromosome": pd.Categorical(chroms),
+            "Start": starts,
+            "End": ends,
+            "ID": ids,
+            "REF": refs,
+            "ALT": alts,
+            "QUAL": quals,
+            "FILTER": pd.Categorical(filters),
+        },
+    )
+    for k, v in info_cols.items():
+        df[k] = v
+
+    return ensure_pyranges(df)
