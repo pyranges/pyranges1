@@ -31,6 +31,20 @@ if TYPE_CHECKING:
     from pyranges1 import PyRanges
     from pyranges1.range_frame.range_frame import RangeFrame
 
+_UINT32_MAX = int(np.iinfo(np.uint32).max)
+
+
+def _codes_and_cardinality(s) -> tuple[ndarray, int]:
+    """Dense 0-based group codes for one column (sorted-value order) plus its cardinality.
+
+    ``pd.factorize(sort=True)`` yields the same group ordering that
+    ``groupby(sort=True).ngroup()`` would, but without building the GroupBy
+    machinery; for a categorical column (the dtype the readers return for
+    Chromosome/Strand) it works directly off the category codes.
+    """
+    codes, uniques = pd.factorize(s, sort=True)
+    return codes.astype(np.int64), len(uniques)
+
 
 def factorize(
     df: "pd.DataFrame",
@@ -58,7 +72,21 @@ def factorize(
     if not by:
         return np.zeros(len(df), dtype=np.uint8)
     _by = arg_to_list(by)
-    return df.groupby(_by).ngroup().to_numpy().astype(np.uint32)
+
+    combined, prod = _codes_and_cardinality(df[_by[0]])
+    for col in _by[1:]:
+        codes, card = _codes_and_cardinality(df[col])
+        combined = combined * card + codes
+        prod *= card
+
+    # When the cardinality product is small (the genomic Chromosome[/Strand] case)
+    # the packed per-column codes are already valid group ids in sorted order, so we
+    # skip the densify. Otherwise compact them; ``np.unique`` sorts, so the group
+    # ordering still matches ``groupby(sort=True).ngroup()``.
+    if 0 < prod <= max(len(df), 1) and prod <= _UINT32_MAX:
+        return combined.astype(np.uint32)
+    _, ids = np.unique(combined, return_inverse=True)
+    return ids.astype(np.uint32).ravel()
 
 
 def factorize_arange(
@@ -120,14 +148,29 @@ def factorize_binary(
     if not by:
         return np.zeros(len(df), dtype=np.uint8), np.zeros(len(df2), dtype=np.uint8)
     _by = arg_to_list(by)
-    factorized = (
-        pd.concat([df[_by], df2[_by]], ignore_index=True)
-        .groupby(_by, observed=False)
-        .ngroup()
-        .astype(np.uint32)
-        .to_numpy()
-    )
-    return factorized[: len(df)], factorized[len(df) :]
+    n1 = len(df)
+
+    def _union_codes(col: str) -> tuple[ndarray, ndarray, int]:
+        # Factorize a column over the union of both frames so the codes are
+        # consistent across them (the same Chromosome gets the same id in df and df2).
+        joined = pd.concat([df[col], df2[col]], ignore_index=True)
+        codes, uniques = pd.factorize(joined, sort=True)
+        codes = codes.astype(np.int64)
+        return codes[:n1], codes[n1:], len(uniques)
+
+    combined1, combined2, prod = _union_codes(_by[0])
+    for col in _by[1:]:
+        c1, c2, card = _union_codes(col)
+        combined1 = combined1 * card + c1
+        combined2 = combined2 * card + c2
+        prod *= card
+
+    total = n1 + len(df2)
+    if 0 < prod <= max(total, 1) and prod <= _UINT32_MAX:
+        return combined1.astype(np.uint32), combined2.astype(np.uint32)
+    _, ids = np.unique(np.concatenate([combined1, combined2]), return_inverse=True)
+    ids = ids.astype(np.uint32).ravel()
+    return ids[:n1], ids[n1:]
 
 
 def split_on_strand(gr: "PyRanges") -> tuple["PyRanges", "PyRanges"]:
