@@ -471,7 +471,7 @@ def read_bigwig(f: str | Path) -> "PyRanges":
     >>> path = pr.example_data.files["bigwig.bw"]
     >>> pr.read_bigwig(path)
       index  |      Chromosome    Start      End      Value
-      int64  |             str    int64    int64    float64
+      int64  |        category    int64    int64    float64
     -------  ---  ------------  -------  -------  ---------
           0  |               1        0        1        0.1
           1  |               1        1        2        0.2
