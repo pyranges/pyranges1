@@ -82,9 +82,10 @@ def test_tag_dtypes_and_ragged_fill() -> None:
     # f -> float
     assert str(gr["dv"].dtype) == "float64"
     assert gr["dv"].tolist() == [0.02, 0.10]
-    # A (char) -> object/str, None where absent
+    # A (char) -> object/str, missing where absent. The missing scalar is version-dependent
+    # (None on pandas 2.x, NaN under pandas 3.0's string dtype), so assert via isna.
     assert gr["tp"][0] == "P"
-    assert gr["tp"][1] is None
+    assert pd.isna(gr["tp"][1])
 
 
 def test_nrows() -> None:
