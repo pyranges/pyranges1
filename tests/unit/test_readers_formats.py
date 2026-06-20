@@ -86,7 +86,10 @@ def test_read_vcf() -> None:
     # 1-based POS -> 0-based Start; End spans the REF allele.
     assert gr["Start"].tolist() == [99, 199, 299]
     assert gr["End"].tolist() == [100, 201, 300]  # SNV len1, AC len2, SNV len1
-    assert list(gr["ID"]) == ["rs1", None, "rs3"]
+    # missing ID (".") -> NA; its scalar repr is version-dependent (None on pandas 2.x,
+    # NaN under pandas 3.0's string dtype), so assert missingness rather than identity.
+    assert gr["ID"].isna().tolist() == [False, True, False]
+    assert gr["ID"].dropna().tolist() == ["rs1", "rs3"]
     assert list(gr["REF"]) == ["A", "AC", "T"]
     assert list(gr["ALT"]) == ["G", "A", "C,G"]  # multi-allelic comma-joined
     assert [str(x) for x in gr["FILTER"]] == ["PASS", "q10", "PASS"]
