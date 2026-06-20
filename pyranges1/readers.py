@@ -530,7 +530,13 @@ def read_bigwig(f: str | Path) -> "PyRanges":
             },
         )
 
-    return ensure_pyranges(pd.concat(dfs).reset_index(drop=True))
+    df = pd.concat(dfs).reset_index(drop=True)
+    # Chromosome as categorical, consistent with the other readers (read_bed / read_gtf /
+    # read_pairs). Without this it follows pandas' string default — `object` on pandas 2.x,
+    # the new `str` dtype on pandas 3.0 — which breaks the doctype-sensitive doctest and
+    # diverges from the rest of the library.
+    df["Chromosome"] = df["Chromosome"].astype("category")
+    return ensure_pyranges(df)
 
 
 # Minimum number of tab-separated fields in a 4DN .pairs record
