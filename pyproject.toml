@@ -94,6 +94,12 @@ deps =
     bamread
     pyBigWig
     pyfaidx
+    # optional-format readers/writers, so their doctests + tests run in CI
+    # instead of being importorskip-ped: pysam (SAM/CRAM/VCF), pyarrow (Parquet),
+    # pybigtools (bigBed).
+    pysam
+    pyarrow
+    pybigtools
     tox
     ruff == 0.14.1
     pandas-stubs<3
