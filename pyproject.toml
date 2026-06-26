@@ -38,6 +38,8 @@ add-ons = [
     "bamread",
     "pyfaidx",
     "pyBigWig",
+    "pyarrow",
+    "pybigtools",
     "joblib",
 ] #"fisher",
 dev = [
