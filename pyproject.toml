@@ -36,8 +36,11 @@ dependencies = ["pandas", "tabulate", "natsort", "ruranges>=0.1.4", "gtfreader>=
 add-ons = [
     "pyrle >= 0.0.43",
     "bamread",
+    "pysam",
     "pyfaidx",
     "pyBigWig",
+    "pyarrow",
+    "pybigtools",
     "joblib",
 ] #"fisher",
 dev = [
@@ -94,6 +97,12 @@ deps =
     bamread
     pyBigWig
     pyfaidx
+    # optional-format readers/writers, so their doctests + tests run in CI
+    # instead of being importorskip-ped: pysam (SAM/CRAM/VCF), pyarrow (Parquet),
+    # pybigtools (bigBed).
+    pysam
+    pyarrow
+    pybigtools
     tox
     ruff == 0.14.1
     pandas-stubs<3

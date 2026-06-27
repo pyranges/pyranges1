@@ -3994,6 +3994,154 @@ class PyRanges(RangeFrame):
 
         return _to_bed(self, path, keep=keep, compression=compression)
 
+    def to_parquet(self, path: str | None = None, *, index: bool = False, **kwargs) -> bytes | None:  # type: ignore[override]
+        r"""Write to Parquet.
+
+        Parquet preserves column dtypes (categoricals included) and reads back
+        much faster than CSV-based formats. The companion reader is
+        :func:`pyranges1.read_parquet`.
+
+        Parameters
+        ----------
+        path : str, default None
+            Where to write. If None, returns the Parquet file as ``bytes``.
+
+        index : bool, default False
+            Whether to write the row index. Defaults to False, so a
+            ``to_parquet`` -> ``read_parquet`` round-trip yields a clean
+            ``RangeIndex`` and no stray index column.
+
+        **kwargs
+            Forwarded to :meth:`pandas.DataFrame.to_parquet`
+            (e.g. ``engine``, ``compression``).
+
+        Returns
+        -------
+        bytes or None
+
+        Examples
+        --------
+        >>> import pyranges1 as pr  # doctest: +SKIP
+        >>> gr.to_parquet("intervals.parquet")  # doctest: +SKIP
+
+        """
+        return pd.DataFrame.to_parquet(self, path, index=index, **kwargs)
+
+    def to_narrowPeak(  # noqa: N802
+        self,
+        path: str | None = None,
+        compression: PANDAS_COMPRESSION_TYPE = None,
+    ) -> str | None:
+        r"""Write to ENCODE narrowPeak (BED6+4).
+
+        The companion reader is :func:`pyranges1.read_narrowPeak`. Columns
+        Chromosome, Start, End, Name, Score, Strand, SignalValue, PValue, QValue,
+        Peak are written in that order; any missing column is filled with ``.``.
+
+        Parameters
+        ----------
+        path : str, default None
+            Where to write. If None, returns the string representation.
+
+        compression : str, default None
+            Compression type; by default inferred from the extension.
+
+        Returns
+        -------
+        str or None
+
+        Examples
+        --------
+        >>> d = {'Chromosome': ['chr1'], 'Start': [100], 'End': [200], 'Name': ['peak1'],
+        ...      'Score': [500], 'Strand': ['+'], 'SignalValue': [5.5], 'PValue': [3.2],
+        ...      'QValue': [2.1], 'Peak': [50]}
+        >>> pr.PyRanges(d).to_narrowPeak()
+        'chr1\t100\t200\tpeak1\t500\t+\t5.5\t3.2\t2.1\t50\n'
+
+        """
+        from pyranges1.core.out import _to_narrowpeak
+
+        return _to_narrowpeak(self, path, compression=compression)
+
+    def to_pairs(self, path: str | None = None) -> str | None:
+        r"""Write to the 4DN Hi-C ``.pairs`` format.
+
+        The companion reader is :func:`pyranges1.read_pairs`. The canonical
+        ``Chromosome/Start/Strand`` mate is written as side 1 and the
+        ``Other*`` mate as side 2, so ``read_pairs`` (with the default
+        ``anchor="1"``) round-trips. 0-based ``Start`` is written back as
+        1-based ``pos``. A ``.gz`` path is gzip-compressed.
+
+        Parameters
+        ----------
+        path : str, default None
+            Where to write. If None, returns the string representation.
+
+        Returns
+        -------
+        str or None
+
+        Examples
+        --------
+        >>> d = {'Chromosome': ['chr1'], 'Start': [99], 'End': [100], 'Strand': ['+'],
+        ...      'OtherChromosome': ['chr2'], 'OtherStart': [199], 'OtherEnd': [200],
+        ...      'OtherStrand': ['-'], 'ReadID': ['r1']}
+        >>> txt = pr.PyRanges(d).to_pairs()
+        >>> txt.splitlines()[0]
+        '## pairs format v1.0'
+        >>> txt.splitlines()[2]
+        'r1\tchr1\t100\tchr2\t200\t+\t-'
+
+        """
+        from pyranges1.core.out import _to_pairs
+
+        return _to_pairs(self, path)
+
+    def to_bigbed(
+        self,
+        path: str,
+        chromosome_sizes: "pr.PyRanges | pd.DataFrame | dict | None" = None,
+        autosql: str | None = None,
+    ) -> None:
+        r"""Write to BigBed (binary, R-tree-indexed BED).
+
+        The companion reader is :func:`pyranges1.read_bigbed`. The column schema
+        is carried inside the file as an autoSql definition (conventional names:
+        ``name``/``score``/``strand``/...), so a ``to_bigbed`` -> ``read_bigbed``
+        round-trip restores the columns. Entries are sorted by
+        ``(Chromosome, Start, End)`` as BigBed requires.
+
+        Parameters
+        ----------
+        path : str
+            Output ``.bb`` / ``.bigbed`` file.
+
+        chromosome_sizes : dict, PyRanges or DataFrame, optional
+            Per-chromosome lengths. If None (default), they are derived from the
+            maximum ``End`` per chromosome in the data.
+
+        autosql : str, optional
+            Override the generated autoSql schema.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        This functionality requires the library ``pybigtools``
+        (``pip install pybigtools``); pyBigWig writes bigWig but not BigBed.
+
+        Examples
+        --------
+        >>> import pyranges1 as pr  # doctest: +SKIP
+        >>> gr.to_bigbed("peaks.bb")  # doctest: +SKIP
+
+        """
+        from pyranges1.core.out import _to_bigbed
+
+        return _to_bigbed(self, path, chromosome_sizes, autosql)
+
     def to_bigwig(
         self: "pr.PyRanges",
         path: None = None,
