@@ -23,6 +23,7 @@ from pyranges1.readers import (  # noqa: F401
     read_cram,
     read_gff3,
     read_gtf,
+    read_paf,
     read_pairs,
     read_sam,
 )
