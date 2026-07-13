@@ -81,6 +81,11 @@ legacy_tox_ini = """
 [tox]
 envlist = py312, py313
 
+[gh]
+python =
+    3.12 = py312
+    3.13 = py313
+
 [testenv]
 basepython =
     py312: python3.12

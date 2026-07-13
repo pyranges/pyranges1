@@ -42,11 +42,7 @@ def _complement(
             the_chromsizes_col = the_chromsizes_col.astype(object)
 
         #  vectorised lookup with no FutureWarning
-        lengths = (
-            the_chromsizes_col.map(chromsizes).astype(  # faster/cleaner than replace
-                pos_dtype, copy=False
-            )  # ensure same dtype as starts/ends
-        )
+        lengths = the_chromsizes_col.map(chromsizes).astype(pos_dtype)  # faster/cleaner than replace
 
         group_to_len = pd.DataFrame(
             {
