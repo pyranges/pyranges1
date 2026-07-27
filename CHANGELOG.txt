@@ -1,3 +1,8 @@
+# 1.3.10 (27.07.26)
+- require `ruranges>=0.1.5`, which fixes `complement_ranges` attributing each gap to an arbitrary row's grouping columns (gh-157)
+- `loci` now leaves an omitted slice bound genuinely open; the lower bound was clamped to a finite value, so `gr.loci[:n]` silently dropped intervals lying entirely below it
+- remove `copy=False` from an `astype` call that failed pyright CI; add tox `[gh]` section
+
 # 1.3.9 (30.05.26)
 - fix `join_overlaps` duplicating rows in `left`/`outer` joins when the input index did not start at 0
 - preserve the input index in `join_overlaps` output (self for inner/left/outer, other for right), consistent with `overlap`/`nearest_ranges`
