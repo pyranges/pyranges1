@@ -69,8 +69,11 @@ def _rows_matching_strand(gr: "PyRanges", strand: str | None) -> "pd.Series[bool
 def _rows_matching_range(gr: "PyRanges", _range: slice | None) -> "pd.Series[bool]":
     if _range is None:
         return pd.Series(data=True, index=gr.index)
+    # An omitted bound leaves that side of the window open, so both use an
+    # infinite limit. A finite lower default such as -1 would silently drop
+    # intervals lying entirely below it.
     start_in_range = gr[START_COL] < (_range.stop if _range.stop is not None else np.inf)
-    end_in_range = gr[END_COL] > (_range.start if _range.start is not None else -1)
+    end_in_range = gr[END_COL] > (_range.start if _range.start is not None else -np.inf)
     return start_in_range & end_in_range
 
 
