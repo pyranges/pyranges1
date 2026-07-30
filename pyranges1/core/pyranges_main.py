@@ -1182,9 +1182,9 @@ class PyRanges(RangeFrame):
 
         multiple : {"all", "first", "last"}, default "all"
             What intervals to report when multiple intervals in 'other' overlap with the same interval in self.
-            The default "all" reports all overlapping subintervals, which will have duplicate indices.
-            "first" reports only, for each interval in self, the overlapping subinterval with smallest Start in 'other'
-            "last" reports only the overlapping subinterval with the biggest End in 'other'
+            The default "all" reports one row per overlapping pair, which will have duplicate indices.
+            "first" attaches, for each interval in self, only the overlapping interval of 'other' with the
+            smallest Start; "last" attaches only the one with the biggest End.
 
         contained_intervals_only : bool, default False
             Whether to report only intervals that are entirely contained in an interval of 'other'.
@@ -2425,8 +2425,10 @@ class PyRanges(RangeFrame):
             e.g. slack=1 reports bookended intervals.
 
         multiple : bool, default False
-            What intervals to report when multiple intervals in 'other' overlap with the same interval in self.
-            If True, each interval is reported once for every overlap, potentially resulting in duplicate indices.
+            What to report when several intervals of 'other' overlap the same interval of self.
+            False reports each interval of self at most once; True reports it once per overlap,
+            potentially resulting in duplicate indices. Only intervals of self are returned, so
+            this option changes how many rows appear, never their content.
 
         contained_intervals_only : bool, default False
             Whether to report only intervals that are entirely contained in an interval of 'other'.
@@ -2502,6 +2504,18 @@ class PyRanges(RangeFrame):
               2  |    chr2                4        9  b
         PyRanges with 5 rows, 4 columns, and 1 index columns (with 2 index duplicates).
         Contains 2 chromosomes.
+
+        RangeFrame.overlap reads the same argument the same way; only the default differs,
+        since a genomic overlap filters by default and a generic one does not:
+
+        >>> gr.overlap(gr2, multiple=True).index.tolist()
+        [0, 0, 1, 1, 2]
+        >>> gr.overlap(gr2, multiple=False).index.tolist()
+        [0, 1, 2]
+        >>> gr.overlap(gr2, multiple="all")
+        Traceback (most recent call last):
+        ...
+        TypeError: overlap takes multiple as a bool: use True for 'all' or False for 'first'.
 
         >>> a = pr.PyRanges({"Chromosome": ["chr1", "chr1"], "Start": [5, 1], "End": [7, 3], "ID": ["A", "B"]})
         >>> b = pr.PyRanges({"Chromosome": ["chr1", "chr1"], "Start": [2, 6], "End": [4, 8]})
@@ -2590,14 +2604,12 @@ class PyRanges(RangeFrame):
         Contains 1 chromosomes and 1 strands.
 
         """
-        multiple_arg: VALID_OVERLAP_TYPE = "all" if multiple else "first"
-
         _other, by = prepare_by_binary(self, other=other, strand_behavior=strand_behavior, match_by=match_by)
         gr = super().overlap(
             _other,
             match_by=by,
             slack=slack,
-            multiple=multiple_arg,
+            multiple=multiple,
             contained_intervals_only=contained_intervals_only,
             preserve_input_order=preserve_input_order,
         )
@@ -3713,7 +3725,7 @@ class PyRanges(RangeFrame):
         self,
         tile_size: int,
         *,
-        use_strand: bool = False,
+        use_strand: VALID_USE_STRAND_TYPE = False,
         match_by: VALID_BY_TYPES = None,
         overlap_column: str | None = None,
     ) -> "PyRanges":
@@ -5321,9 +5333,9 @@ class PyRanges(RangeFrame):
 
         multiple : {"all", "first", "last"}, default "all"
             What intervals to report when multiple intervals in 'other' overlap with the same interval in self.
-            The default "all" reports all overlapping subintervals, which will have duplicate indices.
-            "first" reports only, for each interval in self, the overlapping subinterval with smallest Start in 'other'
-            "last" reports only the overlapping subinterval with the biggest End in 'other'
+            The default "all" reports one subinterval per overlapping pair, which will have
+            duplicate indices. "first" reports only the subinterval clipped against the interval
+            of 'other' with the smallest Start; "last" clips against the one with the biggest End.
 
         strand_behavior : {"auto", "same", "opposite", "ignore"}, default "auto"
             Whether to consider overlaps of intervals on the same strand, the opposite or ignore strand

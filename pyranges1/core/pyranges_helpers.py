@@ -10,7 +10,10 @@ from pyranges1.core.names import (
     CHROM_AND_STRAND_COLS,
     CHROM_COL,
     FORWARD_STRAND,
+    OVERLAP_ALL,
+    OVERLAP_FIRST,
     RANGE_COLS,
+    REMOVED_OVERLAP_CONTAINED,
     REVERSE_STRAND,
     STRAND_BEHAVIOR_AUTO,
     STRAND_BEHAVIOR_IGNORE,
@@ -21,6 +24,8 @@ from pyranges1.core.names import (
     USE_STRAND_AUTO,
     VALID_BY_OPTIONS,
     VALID_BY_TYPES,
+    VALID_OVERLAP_OPTIONS,
+    VALID_OVERLAP_TYPE,
     VALID_STRAND_BEHAVIOR_OPTIONS,
     VALID_STRAND_BEHAVIOR_TYPE,
     VALID_USE_STRAND_OPTIONS,
@@ -269,6 +274,86 @@ def validate_and_convert_use_strand(self: "PyRanges", use_strand: VALID_USE_STRA
             msg = f"{fn_name}: '{USE_STRAND_AUTO}' use_strand treated as False due to invalid Strand values. Please use use_strand=False"
             warnings.warn(msg, stacklevel=4)
     return use_strand
+
+
+def validate_and_convert_multiple(multiple: VALID_OVERLAP_TYPE) -> VALID_OVERLAP_TYPE:
+    """Validate the multiplicity option of the operations that select a right interval.
+
+    ``intersect_overlaps``, ``join_overlaps`` and ``set_intersect_overlaps`` return
+    information taken from ``other``, so 'first' and 'last' pick genuinely different
+    output. ``overlap`` does not, and spells the option as a bool instead; see
+    :func:`validate_and_convert_overlap_multiple`.
+
+    Parameters
+    ----------
+    multiple : {'first', 'all', 'last'}
+        The multiple option provided by the user.
+
+    Returns
+    -------
+    str
+        One of VALID_OVERLAP_OPTIONS.
+
+    Examples
+    --------
+    >>> validate_and_convert_multiple("last")
+    'last'
+    >>> validate_and_convert_multiple("frist")
+    Traceback (most recent call last):
+    ...
+    ValueError: Invalid multiple option: 'frist'. Use one of ['first', 'all', 'last'].
+
+    'contained' was removed in 1.3.12; the argument that replaces it is named:
+
+    >>> validate_and_convert_multiple("contained")
+    Traceback (most recent call last):
+    ...
+    ValueError: multiple='contained' was removed; use contained_intervals_only=True instead.
+
+    """
+    if multiple == REMOVED_OVERLAP_CONTAINED:
+        msg = f"multiple={REMOVED_OVERLAP_CONTAINED!r} was removed; use contained_intervals_only=True instead."
+        raise ValueError(msg)
+    if not isinstance(multiple, str) or multiple not in VALID_OVERLAP_OPTIONS:
+        msg = f"Invalid multiple option: {multiple!r}. Use one of {VALID_OVERLAP_OPTIONS}."
+        raise ValueError(msg)
+    return multiple
+
+
+def validate_and_convert_overlap_multiple(multiple: bool) -> VALID_OVERLAP_TYPE:  # noqa: FBT001
+    """Convert ``overlap``'s multiplicity option to the string the kernel takes.
+
+    ``overlap`` returns rows of ``self`` and nothing from ``other``, so the only thing
+    this option can change is how many times a row appears: 'first' and 'last' would
+    select the same rows and differ in output order alone. Both ``RangeFrame.overlap``
+    and ``PyRanges.overlap`` therefore spell it as a bool.
+
+    Parameters
+    ----------
+    multiple : bool
+        True reports a row once per overlap, False reports it at most once.
+
+    Returns
+    -------
+    str
+        'all' for True and 'first' for False.
+
+    Examples
+    --------
+    >>> validate_and_convert_overlap_multiple(True)
+    'all'
+    >>> validate_and_convert_overlap_multiple(False)
+    'first'
+    >>> validate_and_convert_overlap_multiple("all")
+    Traceback (most recent call last):
+    ...
+    TypeError: overlap takes multiple as a bool: use True for 'all' or False for 'first'.
+
+    """
+    if not isinstance(multiple, bool):
+        msg = "overlap takes multiple as a bool: use True for 'all' or False for 'first'."
+        raise TypeError(msg)
+    return OVERLAP_ALL if multiple else OVERLAP_FIRST
 
 
 def validate_and_convert_strand_behavior(
