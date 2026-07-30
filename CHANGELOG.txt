@@ -1,6 +1,7 @@
 # 1.3.11 (30.07.26)
 - fix `to_bigwig(divide=True)` silently dropping any chromosome whose divided track reduces to a single run; `pyrle`'s `defragment` zeroes the value in that case and `to_ranges` then discards it as uncovered, so e.g. a one-interval frame with `Value=2` over coverage 1 returned no rows instead of log2(2) (gh-160)
 - remove the dead `new_pyrles` accumulator in the same branch, which was built and discarded, and the redundant per-track `defragment()` call whose return value was thrown away
+- removed the only doctest example showcasing a negative slack value, which isn't supported
 
 # 1.3.10 (27.07.26)
 - require `ruranges>=0.1.5`, which fixes `complement_ranges` attributing each gap to an arbitrary row's grouping columns (gh-157)
