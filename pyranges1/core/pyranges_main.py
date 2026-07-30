@@ -2360,7 +2360,7 @@ class PyRanges(RangeFrame):
                 exclude_overlaps=exclude_overlaps,
                 k=k,
                 dist_col=dist_col,
-                direction="forward",
+                direction="backward",
                 preserve_input_order=preserve_input_order,
             )
         elif direction == NEAREST_UPSTREAM:
@@ -2381,7 +2381,7 @@ class PyRanges(RangeFrame):
                 exclude_overlaps=exclude_overlaps,
                 k=k,
                 dist_col=dist_col,
-                direction="backward",
+                direction="forward",
                 preserve_input_order=preserve_input_order,
             )
         else:
