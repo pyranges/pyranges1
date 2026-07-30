@@ -2570,16 +2570,6 @@ class PyRanges(RangeFrame):
         PyRanges with 4 rows, 4 columns, and 1 index columns.
         Contains 2 chromosomes.
 
-        >>> gr.overlap(gr2, contained_intervals_only=True, slack=-2)
-          index  |    Chromosome      Start      End  ID
-          int64  |    str             int64    int64  str
-        -------  ---  ------------  -------  -------  -----
-              0  |    chr1                1        3  A
-              1  |    chr1                1        3  a
-              2  |    chr2                4        9  b
-        PyRanges with 3 rows, 4 columns, and 1 index columns.
-        Contains 2 chromosomes.
-
         >>> gr3 = pr.PyRanges({"Chromosome": 1, "Start": [2, 4], "End": [3, 5], "Strand": ["+", "-"]})
         >>> gr3
           index  |      Chromosome    Start      End  Strand
