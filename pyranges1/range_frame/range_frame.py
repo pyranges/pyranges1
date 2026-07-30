@@ -23,7 +23,12 @@ from pyranges1.core.names import (
     VALID_OVERLAP_TYPE,
     CombineIntervalColumnsOperation,
 )
-from pyranges1.core.pyranges_helpers import arg_to_list, factorize, factorize_binary
+from pyranges1.core.pyranges_helpers import (
+    arg_to_list,
+    factorize,
+    factorize_binary,
+    validate_and_convert_overlap_multiple,
+)
 from pyranges1.core.tostring import tohtml, tostring
 from pyranges1.methods.complement_overlaps import _complement_overlaps
 from pyranges1.methods.join import _both_dfs
@@ -540,9 +545,9 @@ class RangeFrame(pd.DataFrame):
     def overlap(
         self,
         other: "RangeFrame",
-        multiple: VALID_OVERLAP_TYPE = "all",
         slack: int = 0,
         *,
+        multiple: bool = False,
         contained_intervals_only: bool = False,
         match_by: VALID_BY_TYPES = None,
         preserve_input_order: bool = True,
@@ -556,11 +561,11 @@ class RangeFrame(pd.DataFrame):
         other : RangeFrame
             RangeFrame to find overlaps with.
 
-        multiple : {"all", "first", "last"}, default "all"
-            What intervals to report when multiple intervals in 'other' overlap with the same interval in self.
-            The default "all" reports all overlapping subintervals, which will have duplicate indices.
-            "first" reports only, for each interval in self, the overlapping subinterval with smallest Start in 'other'
-            "last" reports only the overlapping subinterval with the biggest End in 'other'
+        multiple : bool, default False
+            What to report when several intervals of 'other' overlap the same interval of self.
+            False reports each interval of self at most once; True reports it once per overlap,
+            potentially resulting in duplicate indices. Only intervals of self are returned, so
+            this option changes how many rows appear, never their content.
 
         slack : int, default 0
             Intervals in self are temporarily extended by slack on both ends before overlap is calculated, so that
@@ -600,7 +605,7 @@ class RangeFrame(pd.DataFrame):
             other,
             by=by,
             slack=slack,
-            multiple=multiple,
+            multiple=validate_and_convert_overlap_multiple(multiple),
             contained=contained_intervals_only,
             preserve_input_order=preserve_input_order,
         )
