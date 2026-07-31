@@ -2625,6 +2625,7 @@ class PyRanges(RangeFrame):
         strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto",
         *,
         multiple: VALID_OVERLAP_TYPE = "all",
+        match_by: VALID_BY_TYPES = None,
         preserve_input_order: bool = True,
     ) -> "PyRanges":
         """Return set-theoretical intersection.
@@ -2646,6 +2647,11 @@ class PyRanges(RangeFrame):
             The default "all" reports all overlapping subintervals.
             "first" reports only, for each merged self interval, the overlapping 'other' subinterval with smallest Start
             "last" reports only the overlapping subinterval with the biggest End in 'other'
+
+        match_by : str or list, default None
+            If provided, only intervals with an equal value in column(s) `match_by` may be considered as
+            overlapping. The merging of each input is grouped by these columns too, and they are carried
+            into the result.
 
         preserve_input_order : bool, default True
             Whether to preserve the original input order in the result.
@@ -2715,17 +2721,24 @@ class PyRanges(RangeFrame):
         strand_behavior = validate_and_convert_strand_behavior(self, other, strand_behavior)
 
         use_strand = use_strand_from_validated_strand_behavior(self, other, strand_behavior)
-        self_clusters = self.merge_overlaps(use_strand=use_strand and self.has_strand)
-        other_clusters = other.merge_overlaps(use_strand=use_strand and other.has_strand)
+        self_clusters = self.merge_overlaps(use_strand=use_strand and self.has_strand, match_by=match_by)
+        other_clusters = other.merge_overlaps(use_strand=use_strand and other.has_strand, match_by=match_by)
         result = self_clusters.intersect_overlaps(
             other_clusters,
             strand_behavior=strand_behavior,
             multiple=multiple,
+            match_by=match_by,
             preserve_input_order=preserve_input_order,
         )
         return ensure_pyranges(result.reset_index(drop=True))
 
-    def set_union_overlaps(self, other: "PyRanges", strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto") -> "PyRanges":
+    def set_union_overlaps(
+        self,
+        other: "PyRanges",
+        strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto",
+        *,
+        match_by: VALID_BY_TYPES = None,
+    ) -> "PyRanges":
         """Return set-theoretical union.
 
         Returns the regions present in either self or other.
@@ -2740,6 +2753,10 @@ class PyRanges(RangeFrame):
             Whether to consider overlaps of intervals on the same strand, the opposite or ignore strand
             information. The default, "auto", means use "same" if both PyRanges are stranded (see .strand_valid)
             otherwise ignore the strand information.
+
+        match_by : str or list, default None
+            If provided, the union is taken separately within each group of equal values in column(s)
+            `match_by`, which are carried into the result.
 
         Returns
         -------

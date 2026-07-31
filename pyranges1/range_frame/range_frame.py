@@ -725,6 +725,51 @@ class RangeFrame(pd.DataFrame):
 
         return InvalidRangesReason.is_invalid_ranges_reasons(self)
 
+    def ensure_valid_ranges(self) -> "RangeFrame":
+        """Return self unchanged, raising if the ranges are invalid.
+
+        PyRanges checks validity lazily, when a frame is displayed, so nothing
+        inside the library calls this. It is offered for callers who want the
+        check at a point of their choosing, and so that the same spelling works
+        across the PyRanges implementations.
+
+        Returns
+        -------
+        RangeFrame
+            self, unchanged.
+
+        Raises
+        ------
+        ValueError
+            If any interval is invalid; the message lists every reason.
+
+        See Also
+        --------
+        RangeFrame.reasons_why_frame_is_invalid : the reasons, without raising.
+
+        Examples
+        --------
+        >>> import pyranges1 as pr
+        >>> rf = pr.RangeFrame({"Start": [1, 10], "End": [5, 15]})
+        >>> rf.ensure_valid_ranges()
+          index  |      Start      End
+          int64  |      int64    int64
+        -------  ---  -------  -------
+              0  |          1        5
+              1  |         10       15
+        RangeFrame with 2 rows, 2 columns, and 1 index columns.
+
+        >>> pr.RangeFrame({"Start": [10], "End": [5]}).ensure_valid_ranges()
+        Traceback (most recent call last):
+        ...
+        ValueError: Invalid ranges:
+          * 1 intervals are empty or negative length (end <= start). See indexes: 0
+        """
+        if reasons := InvalidRangesReason.formatted_reasons_list(self):
+            msg = f"Invalid ranges:\n{reasons}"
+            raise ValueError(msg)
+        return self
+
     def copy(self, *args, **kwargs) -> "RangeFrame":  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D102
         return _mypy_ensure_rangeframe(super().copy(*args, **kwargs))
 
