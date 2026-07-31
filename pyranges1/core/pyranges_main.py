@@ -24,6 +24,7 @@ from pyranges1.core.names import (
     NEAREST_DOWNSTREAM,
     NEAREST_UPSTREAM,
     PANDAS_COMPRESSION_TYPE,
+    RANGE_COLS,
     REVERSE_STRAND,
     START_COL,
     STRAND_BEHAVIOR_OPPOSITE,
@@ -58,7 +59,7 @@ from pyranges1.methods.complement import _complement
 from pyranges1.methods.interval_metrics import compute_interval_metrics
 from pyranges1.methods.map_to_global import _map_to_global_pandas
 from pyranges1.methods.map_to_local import _map_to_local
-from pyranges1.methods.sort import sort_factorize_dict
+from pyranges1.methods.sort import resolve_sort_keys, sort_order
 from pyranges1.range_frame.range_frame import RangeFrame
 from pyranges1.range_frame.range_frame_validator import InvalidRangesReason
 
@@ -2839,7 +2840,7 @@ class PyRanges(RangeFrame):
 
         gr = pr.concat([_self, other])
 
-        return gr.merge_overlaps(use_strand=use_strand)
+        return gr.merge_overlaps(use_strand=use_strand, match_by=match_by)
 
     def sort_ranges(  # type: ignore[override]
         self,
@@ -2847,12 +2848,19 @@ class PyRanges(RangeFrame):
         *,
         natsort: bool = True,
         use_strand: VALID_USE_STRAND_TYPE = "auto",
+        sort_descending: VALID_BY_TYPES = None,
     ) -> "PyRanges":
         """Sort PyRanges according to Chromosome, Strand (if present), Start, and End; or by the specified columns.
 
         If PyRanges is stranded and use_strand is True, intervals on the negative strand are sorted in descending
         order, and End is considered before Start. This is to have a 5' to 3' order.
         For uses not covered by this function, use  DataFrame.sort_values().
+
+        The full key list is Chromosome, Strand, *by, Start, End, and any column you name in
+        ``by`` is taken out of its implicit position and used where you put it. So
+        ``by=["Strand", "Chromosome"]`` sorts by strand first, and ``by=["Start", "End", "score"]``
+        puts ``score`` after the coordinates. The rule applies per column, so name every key
+        you care about: ``by=["score", "Chromosome"]`` gives Strand, score, Chromosome, Start, End.
 
         Parameters
         ----------
@@ -2863,8 +2871,18 @@ class PyRanges(RangeFrame):
             Whether negative strand intervals should be sorted in descending order, meaning 5' to 3'.
             The default "auto" means True if PyRanges has valid strands (see .strand_valid).
 
+            Note this does not control whether Strand is a sort key: it always is, when the
+            column exists. use_strand=False only stops negative-strand rows being ordered
+            3' to 5'. To sort without grouping by strand, drop or rename the column.
+
         natsort : bool, default True
-            Whether to use natural sorting for Chromosome column, so that e.g. chr2 < chr11.
+            Whether to use natural sorting for string columns, so that e.g. chr2 < chr11.
+
+        sort_descending : str or list of str, default None
+            Keys to sort in reverse. Every name must be one of the sort keys, the implicit
+            Chromosome, Strand, Start and End included; a name that is not raises ValueError.
+            On the coordinate keys this composes with use_strand by XOR, so a reversed row and
+            a reversed key cancel out.
 
         Returns
         -------
@@ -2997,22 +3015,21 @@ class PyRanges(RangeFrame):
         Contains 3 chromosomes and 2 strands.
 
         """
-        from pyranges1._ruranges import require_ruranges
-
-        ruranges = require_ruranges()
-
-        by = arg_to_list(by)
-
         use_strand = validate_and_convert_use_strand(self, use_strand)
 
-        by = ([CHROM_COL] if STRAND_COL not in self else CHROM_AND_STRAND_COLS) + by
-
-        by_sort_order_as_int = sort_factorize_dict(self, by, use_natsort=natsort)
-        idxs = ruranges.numpy.sort_intervals(  # type: ignore[attr-defined]
-            self[START_COL].to_numpy(),
-            self[END_COL].to_numpy(),
-            by_sort_order_as_int,
-            sort_reverse_direction=None if not use_strand else (self[STRAND_COL] == "-").to_numpy(dtype=bool),
+        keys, descending = resolve_sort_keys(
+            self.columns,
+            head=[CHROM_COL] if STRAND_COL not in self else CHROM_AND_STRAND_COLS,
+            by=arg_to_list(by),
+            tail=RANGE_COLS,
+            sort_descending=arg_to_list(sort_descending),
+        )
+        idxs = sort_order(
+            self,
+            keys,
+            descending,
+            use_natsort=natsort,
+            reverse_rows=None if not use_strand else (self[STRAND_COL] == "-").to_numpy(dtype=bool),
         )
         res = self.take(idxs)  # type: ignore[arg-type]
 
