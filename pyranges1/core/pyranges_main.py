@@ -33,6 +33,7 @@ from pyranges1.core.names import (
     USE_STRAND_DEFAULT,
     VALID_BY_TYPES,
     VALID_COMBINE_OPTIONS,
+    VALID_DIRECTION_TYPE,
     VALID_GENOMIC_STRAND_INFO,
     VALID_JOIN_TYPE,
     VALID_NEAREST_TYPE,
@@ -2341,58 +2342,36 @@ class PyRanges(RangeFrame):
             )
             return ensure_pyranges(res)
 
-        fwd_self, rev_self = split_on_strand(self)
-        if direction == NEAREST_DOWNSTREAM:
-            res = RangeFrame(fwd_self).nearest_ranges(
-                other=_other,
-                match_by=by,
-                suffix=suffix,
-                exclude_overlaps=exclude_overlaps,
-                k=k,
-                dist_col=dist_col,
-                direction="forward",
-                preserve_input_order=preserve_input_order,
-            )
-            res2 = RangeFrame(rev_self).nearest_ranges(
-                other=_other,
-                match_by=by,
-                suffix=suffix,
-                exclude_overlaps=exclude_overlaps,
-                k=k,
-                dist_col=dist_col,
-                direction="backward",
-                preserve_input_order=preserve_input_order,
-            )
-        elif direction == NEAREST_UPSTREAM:
-            res = RangeFrame(fwd_self).nearest_ranges(
-                other=RangeFrame(_other),
-                match_by=by,
-                suffix=suffix,
-                exclude_overlaps=exclude_overlaps,
-                k=k,
-                dist_col=dist_col,
-                direction="backward",
-                preserve_input_order=preserve_input_order,
-            )
-            res2 = RangeFrame(rev_self).nearest_ranges(
-                other=RangeFrame(_other),
-                match_by=by,
-                suffix=suffix,
-                exclude_overlaps=exclude_overlaps,
-                k=k,
-                dist_col=dist_col,
-                direction="forward",
-                preserve_input_order=preserve_input_order,
-            )
-        else:
+        if direction not in (NEAREST_UPSTREAM, NEAREST_DOWNSTREAM):
             msg = f"Invalid direction: {direction}"
             raise ValueError(msg)
 
-        return ensure_pyranges(
-            pd.concat(
-                [res, res2],
+        # RangeFrame.nearest_ranges searches in pure coordinate space, where "forward"
+        # means higher coordinates. Genomic downstream follows increasing coordinates on
+        # the forward strand but decreasing coordinates on the reverse strand (and upstream
+        # is the mirror image), so each strand resolves its own coordinate direction. This
+        # table is the single source of the strand-to-coordinate-direction mapping.
+        coordinate_direction: dict[tuple[str, str], VALID_DIRECTION_TYPE] = {
+            (NEAREST_DOWNSTREAM, FORWARD_STRAND): "forward",
+            (NEAREST_DOWNSTREAM, REVERSE_STRAND): "backward",
+            (NEAREST_UPSTREAM, FORWARD_STRAND): "backward",
+            (NEAREST_UPSTREAM, REVERSE_STRAND): "forward",
+        }
+        per_strand = [
+            RangeFrame(strand_self).nearest_ranges(
+                other=_other,
+                match_by=by,
+                suffix=suffix,
+                exclude_overlaps=exclude_overlaps,
+                k=k,
+                dist_col=dist_col,
+                direction=coordinate_direction[direction, strand],
+                preserve_input_order=preserve_input_order,
             )
-        )
+            for strand, strand_self in zip(VALID_GENOMIC_STRAND_INFO, split_on_strand(self))
+        ]
+
+        return ensure_pyranges(pd.concat(per_strand))
 
     def overlap(  # type: ignore[override]
         self,
