@@ -92,21 +92,29 @@ VALID_JOIN_OPTIONS = [JOIN_INNER, JOIN_LEFT, JOIN_OUTER, JOIN_RIGHT]
 JOIN_SUFFIX = "_b"
 VALID_COMBINE_OPTIONS = Literal["intersect", "union", "swap"]
 
+# Two direction vocabularies, deliberately kept apart. The genomic one is
+# strand-aware: on the reverse strand "upstream" is the higher coordinate. The
+# coordinate one knows nothing of strand: "forward" is always the higher
+# coordinate. Sharing one word between them would let a coordinate-space intent
+# pass silently where a biological one was meant.
 NEAREST_ANY_DIRECTION: Final = "any"
 NEAREST_UPSTREAM: Final = "upstream"
 NEAREST_DOWNSTREAM: Final = "downstream"
-VALID_NEAREST_TYPE = Literal["any", "upstream", "downstream"]
-VALID_NEAREST_OPTIONS = [
+VALID_GENOMIC_DIRECTION_TYPE = Literal["any", "upstream", "downstream"]
+VALID_GENOMIC_DIRECTION_OPTIONS = [
     NEAREST_ANY_DIRECTION,
     NEAREST_UPSTREAM,
-    NEAREST_UPSTREAM,
-    None,
+    NEAREST_DOWNSTREAM,
 ]
 
-VALID_DIRECTION_TYPE = Literal["any", "forward", "backward"]
-ANY_DIRECTION = Literal["any"]
-FORWARD_DIRECTION = Literal["forward"]
-BACKWARD_DIRECTION = Literal["backward"]
+FORWARD_DIRECTION: Final = "forward"
+BACKWARD_DIRECTION: Final = "backward"
+VALID_COORDINATE_DIRECTION_TYPE = Literal["any", "forward", "backward"]
+VALID_COORDINATE_DIRECTION_OPTIONS = [
+    NEAREST_ANY_DIRECTION,
+    FORWARD_DIRECTION,
+    BACKWARD_DIRECTION,
+]
 
 TEMP_INDEX_COL = "__temp_index__"
 TEMP_TYPE_COL = "__temp_type__"
