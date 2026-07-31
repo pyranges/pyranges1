@@ -19,7 +19,8 @@ from pyranges1.core.names import (
     START_COL,
     VALID_BY_TYPES,
     VALID_COMBINE_OPTIONS,
-    VALID_DIRECTION_TYPE,
+    VALID_COORDINATE_DIRECTION_OPTIONS,
+    VALID_COORDINATE_DIRECTION_TYPE,
     VALID_JOIN_TYPE,
     VALID_OVERLAP_TYPE,
     CombineIntervalColumnsOperation,
@@ -467,7 +468,7 @@ class RangeFrame(pd.DataFrame):
         exclude_overlaps: bool = False,
         k: int = 1,
         dist_col: str | None = "Distance",
-        direction: VALID_DIRECTION_TYPE = "any",
+        direction: VALID_COORDINATE_DIRECTION_TYPE = "any",
         preserve_input_order: bool = True,
     ) -> "RangeFrame":
         """Find closest interval.
@@ -515,6 +516,17 @@ class RangeFrame(pd.DataFrame):
 
         """
         from pyranges1._ruranges import require_ruranges
+
+        if direction not in VALID_COORDINATE_DIRECTION_OPTIONS:
+            # Without this the value reaches ruranges, which panics with
+            # "Invalid direction string". A PanicException is not an Exception,
+            # so `except Exception` cannot catch it and the caller is aborted.
+            msg = (
+                f"direction must be one of {VALID_COORDINATE_DIRECTION_OPTIONS}; got {direction!r}. "
+                "'upstream' and 'downstream' are strand-aware and live on "
+                "PyRanges.nearest_ranges; a RangeFrame has no Strand column."
+            )
+            raise ValueError(msg)
 
         ruranges = require_ruranges()
 

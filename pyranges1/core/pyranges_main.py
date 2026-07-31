@@ -33,10 +33,11 @@ from pyranges1.core.names import (
     USE_STRAND_DEFAULT,
     VALID_BY_TYPES,
     VALID_COMBINE_OPTIONS,
-    VALID_DIRECTION_TYPE,
+    VALID_COORDINATE_DIRECTION_TYPE,
+    VALID_GENOMIC_DIRECTION_OPTIONS,
+    VALID_GENOMIC_DIRECTION_TYPE,
     VALID_GENOMIC_STRAND_INFO,
     VALID_JOIN_TYPE,
-    VALID_NEAREST_TYPE,
     VALID_OVERLAP_TYPE,
     VALID_STRAND_BEHAVIOR_TYPE,
     VALID_USE_STRAND_TYPE,
@@ -2149,7 +2150,7 @@ class PyRanges(RangeFrame):
         self,
         other: "PyRanges",
         strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto",
-        direction: VALID_NEAREST_TYPE = "any",
+        direction: VALID_GENOMIC_DIRECTION_TYPE = "any",
         *,
         k: int = 1,
         match_by: VALID_BY_TYPES = None,
@@ -2343,7 +2344,17 @@ class PyRanges(RangeFrame):
             return ensure_pyranges(res)
 
         if direction not in (NEAREST_UPSTREAM, NEAREST_DOWNSTREAM):
-            msg = f"Invalid direction: {direction}"
+            msg = f"direction must be one of {VALID_GENOMIC_DIRECTION_OPTIONS}; got {direction!r}"
+            raise ValueError(msg)
+
+        if not self.strand_valid:
+            # split_on_strand would otherwise fail deep inside a pandas query with
+            # "name 'Strand' is not defined", which says nothing about the cause.
+            msg = (
+                f"direction={direction!r} is strand-aware and needs valid strand information: "
+                "upstream is the higher coordinate on the reverse strand and the lower one on "
+                "the forward strand. Use direction='any', or see .strand_valid."
+            )
             raise ValueError(msg)
 
         # RangeFrame.nearest_ranges searches in pure coordinate space, where "forward"
@@ -2351,7 +2362,7 @@ class PyRanges(RangeFrame):
         # the forward strand but decreasing coordinates on the reverse strand (and upstream
         # is the mirror image), so each strand resolves its own coordinate direction. This
         # table is the single source of the strand-to-coordinate-direction mapping.
-        coordinate_direction: dict[tuple[str, str], VALID_DIRECTION_TYPE] = {
+        coordinate_direction: dict[tuple[str, str], VALID_COORDINATE_DIRECTION_TYPE] = {
             (NEAREST_DOWNSTREAM, FORWARD_STRAND): "forward",
             (NEAREST_DOWNSTREAM, REVERSE_STRAND): "backward",
             (NEAREST_UPSTREAM, FORWARD_STRAND): "backward",
