@@ -88,11 +88,21 @@ def _bed(df: DataFrame, *, keep: bool) -> DataFrame:
     return outdf
 
 
+def _resolve_compression(compression: PANDAS_COMPRESSION_TYPE) -> PANDAS_COMPRESSION_TYPE:
+    """Resolve the ``compression`` argument of the interval writers.
+
+    pandas reads ``None`` as *no compression, even for a .gz path*. The interval
+    writers infer from the path suffix instead, so ``to_bed("x.bed.gz")`` writes
+    gzip. Every other value is passed to pandas untouched.
+    """
+    return "infer" if compression is None else compression
+
+
 def _to_gff_like(
     gr: PyRanges,
     out_format: Literal["gtf", "gff3"],
     path: Path | None = None,
-    compression: PANDAS_COMPRESSION_TYPE = None,
+    compression: PANDAS_COMPRESSION_TYPE = "infer",
     map_cols: dict | None = None,
 ) -> str | None:
     df = _pyranges_to_gtf_like(
@@ -104,7 +114,7 @@ def _to_gff_like(
         path,
         index=False,
         header=False,
-        compression=compression,
+        compression=_resolve_compression(compression),
         mode="w",
         sep="\t",
         quoting=csv.QUOTE_NONE,
@@ -147,7 +157,7 @@ def _to_csv(
 def _to_bed(
     self: PyRanges,
     path: str | None = None,
-    compression: PANDAS_COMPRESSION_TYPE = None,
+    compression: PANDAS_COMPRESSION_TYPE = "infer",
     *,
     keep: bool = True,
 ) -> str | None:
@@ -157,7 +167,7 @@ def _to_bed(
         path,
         index=False,
         header=False,
-        compression=compression,
+        compression=_resolve_compression(compression),
         mode="w+",
         sep="\t",
         quoting=csv.QUOTE_NONE,

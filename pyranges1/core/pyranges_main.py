@@ -3310,7 +3310,9 @@ class PyRanges(RangeFrame):
         """Split into non-overlapping intervals.
 
         The output does not contain overlapping intervals, but intervals that are adjacent are not merged.
-        No columns other than Chromosome, Start, End, and Strand (if present) are output.
+        Every output interval descends from an input interval and keeps its metadata. With
+        ``between=True`` the gap intervals descend from no input row, so only the location
+        columns are output; ``Strand`` is among them only when it was a grouping key.
 
         Parameters
         ----------
@@ -3376,16 +3378,16 @@ class PyRanges(RangeFrame):
         Contains 1 chromosomes and 2 strands.
 
         >>> gr.split_overlaps(use_strand=False)
-          index  |    Chromosome      Start      End
-          int64  |    str             int64    int64
-        -------  ---  ------------  -------  -------
-              0  |    chr1                3        5
-              1  |    chr1                5        6
-              2  |    chr1                6        7
-              3  |    chr1                7        9
-              4  |    chr1               11       12
-        PyRanges with 5 rows, 3 columns, and 1 index columns.
-        Contains 1 chromosomes.
+          index  |    Chromosome      Start      End  Strand
+          int64  |    str             int64    int64  str
+        -------  ---  ------------  -------  -------  --------
+              0  |    chr1                3        5  +
+              1  |    chr1                5        6  +
+              2  |    chr1                6        7  +
+              3  |    chr1                7        9  -
+              4  |    chr1               11       12  -
+        PyRanges with 5 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
 
         >>> gr.split_overlaps(use_strand=False, between=True)
           index  |    Chromosome      Start      End
@@ -3413,16 +3415,16 @@ class PyRanges(RangeFrame):
         Contains 1 chromosomes and 2 strands.
 
         >>> gr.split_overlaps(use_strand=False, match_by='ID')
-          index  |    Chromosome      Start      End  ID
-          int64  |    str             int64    int64  str
-        -------  ---  ------------  -------  -------  -----
-              0  |    chr1                3        5  a
-              1  |    chr1                5        6  a
-              2  |    chr1                6        7  a
-              3  |    chr1                5        9  b
-              4  |    chr1               11       12  c
-        PyRanges with 5 rows, 4 columns, and 1 index columns.
-        Contains 1 chromosomes.
+          index  |    Chromosome      Start      End  Strand    ID
+          int64  |    str             int64    int64  str       str
+        -------  ---  ------------  -------  -------  --------  -----
+              0  |    chr1                3        5  +         a
+              1  |    chr1                5        6  -         a
+              2  |    chr1                6        7  +         a
+              3  |    chr1                5        9  +         b
+              4  |    chr1               11       12  -         c
+        PyRanges with 5 rows, 5 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
 
         """
         from pyranges1._ruranges import require_ruranges
@@ -3443,10 +3445,12 @@ class PyRanges(RangeFrame):
 
         res = ensure_pyranges(self.take(idxs).reset_index(drop=True))  # type: ignore[arg-type]
         if between:
+            # A gap row descends from no input row, so it carries no metadata; and if
+            # Strand was not a grouping key the gap spans both strands, so no strand
+            # label applies to it either.
             res = res.remove_nonloc_columns()
-
-        if not use_strand:
-            res = res.remove_strand()
+            if not use_strand:
+                res = res.remove_strand()
 
         res.loc[:, START_COL] = starts
         res.loc[:, END_COL] = ends
@@ -3970,7 +3974,7 @@ class PyRanges(RangeFrame):
     def to_bed(
         self,
         path: str | None = None,
-        compression: PANDAS_COMPRESSION_TYPE = None,
+        compression: PANDAS_COMPRESSION_TYPE = "infer",
         *,
         keep: bool = True,
     ) -> str | None:
@@ -3985,8 +3989,10 @@ class PyRanges(RangeFrame):
             Whether to keep all columns, not just Chromosome, Start, End,
             Name, Score, Strand when writing.
 
-        compression : str, compression type to use, by default infer based on extension.
-            See pandas.DataFree.to_csv for more info.
+        compression : {'infer', 'gzip', 'bz2', 'zip', 'xz', 'zstd'}, default "infer"
+            Which compression to use. The default infers it from the file extension,
+            and ``None`` is treated the same way: writing to a ``.gz`` path always
+            produces gzip. See pandas.DataFrame.to_csv for more info.
 
         Examples
         --------
@@ -4158,7 +4164,7 @@ class PyRanges(RangeFrame):
     def to_gff3(
         self,
         path: None = None,
-        compression: PANDAS_COMPRESSION_TYPE = None,
+        compression: PANDAS_COMPRESSION_TYPE = "infer",
         map_cols: dict | None = None,
     ) -> str | None:
         r"""Write to General Feature Format 3.
@@ -4185,8 +4191,10 @@ class PyRanges(RangeFrame):
         path : str, default None, i.e. return string representation.
             Where to write file.
 
-        compression : {'infer', 'gzip', 'bz2', 'zip', 'xz', None}, default "infer"
-            Which compression to use. Uses file extension to infer by default.
+        compression : {'infer', 'gzip', 'bz2', 'zip', 'xz', 'zstd'}, default "infer"
+            Which compression to use. The default infers it from the file extension,
+            and ``None`` is treated the same way: writing to a ``.gz`` path always
+            produces gzip.
 
         map_cols: dict, default None
             Override mapping between GTF and PyRanges fields for any number of columns.
@@ -4279,7 +4287,7 @@ class PyRanges(RangeFrame):
     def to_gtf(
         self,
         path: None = None,
-        compression: PANDAS_COMPRESSION_TYPE = None,
+        compression: PANDAS_COMPRESSION_TYPE = "infer",
         map_cols: dict | None = None,
     ) -> str | None:
         r"""Write to Gene Transfer Format.
@@ -4306,8 +4314,10 @@ class PyRanges(RangeFrame):
         path : str, default None, i.e. return string representation.
             Where to write file.
 
-        compression : {'infer', 'gzip', 'bz2', 'zip', 'xz', None}, default "infer"
-            Which compression to use. Uses file extension to infer by default.
+        compression : {'infer', 'gzip', 'bz2', 'zip', 'xz', 'zstd'}, default "infer"
+            Which compression to use. The default infers it from the file extension,
+            and ``None`` is treated the same way: writing to a ``.gz`` path always
+            produces gzip.
 
         map_cols: dict, default None
             Override mapping between GTF and PyRanges fields for any number of columns.
@@ -5267,8 +5277,9 @@ class PyRanges(RangeFrame):
         ----------
         group_by : str or list, default *None*
             Additional column(s) that must match for two intervals to share a
-            cumulative coordinate space.  When *None* all intervals on the same
-            chromosome are cumulated together.
+            cumulative coordinate space. ``Chromosome`` always does, and
+            ``Strand`` too when *use_strand* resolves to True, so when *None* all
+            intervals on the same chromosome and strand are cumulated together.
         cumsum_start_column, cumsum_end_column : str | None, default None
             Names of the columns added to the returned frame. If None is given,
             Start and End is used.
@@ -5322,7 +5333,17 @@ class PyRanges(RangeFrame):
         ruranges = require_ruranges()
 
         strand = validate_and_convert_use_strand(self, use_strand)
-        group_by = arg_to_list(group_by)
+        # Chromosome (and Strand, when strand-aware) always partition the cumulative
+        # space: two intervals on different chromosomes do not share a coordinate
+        # system, whether or not the caller named further grouping columns.
+        # The caller's own keys lead, because the key order decides how groups are
+        # numbered and so the order rows come back in; only the key *set* affects
+        # which intervals share a cumulative space.
+        group_by = [
+            *arg_to_list(group_by),
+            CHROM_COL,
+            *([STRAND_COL] if strand else []),
+        ]
         group_ids = factorize(self, group_by)
 
         forward = (self[STRAND_COL] == FORWARD_STRAND).to_numpy() if strand else np.ones(self.shape[0], dtype=np.bool_)

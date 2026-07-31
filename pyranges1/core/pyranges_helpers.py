@@ -12,7 +12,6 @@ from pyranges1.core.names import (
     FORWARD_STRAND,
     OVERLAP_ALL,
     OVERLAP_FIRST,
-    RANGE_COLS,
     REMOVED_OVERLAP_CONTAINED,
     REVERSE_STRAND,
     STRAND_BEHAVIOR_AUTO,
@@ -225,7 +224,11 @@ def prepare_by_binary(
     by = [*default_cols, *arg_to_list(match_by)]
 
     if strand_behavior == STRAND_BEHAVIOR_OPPOSITE:
-        _other = other.loc[:, [*RANGE_COLS, *by]].copy()
+        # Copy before flipping so the caller's frame is left alone. The copy is
+        # of every column: methods that report columns from other, such as
+        # join_overlaps and nearest_ranges, must not lose them merely because
+        # the strand had to be flipped first.
+        _other = other.copy()
         _other.loc[:, STRAND_COL] = other[STRAND_COL].replace({"+": "-", "-": "+"})
     else:
         _other = other
