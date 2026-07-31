@@ -361,20 +361,50 @@ coordinates:
   PyRanges with 20 rows, 5 columns, and 1 index columns.
   Contains 15 chromosomes and 2 strands.
 
-To use a different priorization of genomic location columns, specify them in the first argument (``by``):
+The full list of sort keys is ``Chromosome, Strand, *by, Start, End``, and **any column you
+name in** ``by`` **is taken out of its implicit position and used where you put it**. That is
+how you reprioritise the location columns — here ``peak`` comes first, so the frame is
+ordered by peak height across the whole genome:
 
   >>> c.sort_ranges(['peak', 'Chromosome', 'Strand'])
   index    |    Chromosome    Start      End        Strand      peak
   int64    |    category      int64      int64      category    int64
   -------  ---  ------------  ---------  ---------  ----------  -------
   18       |    chr1          194245558  194245583  +           29
-  12       |    chr1          38457520   38457545   +           667
-  13       |    chr1          80668132   80668157   -           388
-  14       |    chr2          152562484  152562509  -           807
-  ...      |    ...           ...        ...        ...         ...
-  4        |    chr12         106679761  106679786  -           782
-  3        |    chr14         19418999   19419024   -           821
-  7        |    chr19         19571102   19571127   +           120
   5        |    chr21         40099618   40099643   +           64
+  16       |    chr9          120803448  120803473  +           96
+  7        |    chr19         19571102   19571127   +           120
+  ...      |    ...           ...        ...        ...         ...
+  14       |    chr2          152562484  152562509  -           807
+  3        |    chr14         19418999   19419024   -           821
+  2        |    chr5          135821802  135821827  -           867
+  19       |    chr8          57916061   57916086   +           914
   PyRanges with 20 rows, 5 columns, and 1 index columns.
   Contains 15 chromosomes and 2 strands.
+
+The same rule lets you sort by a key *after* the coordinates: name ``Start`` and ``End`` in
+``by`` and put the extra key behind them, as in ``by=['Start', 'End', 'peak']``.
+
+The rule applies per column, so it is worth naming every key you care about. Writing
+``by=['peak', 'Chromosome']`` on a stranded frame gives ``Strand, peak, Chromosome, Start,
+End``: only ``Chromosome`` was pulled out of the implicit head, and ``Strand`` stayed where
+it was.
+
+Any key can be reversed with ``sort_descending``, including the implicit ``Chromosome``,
+``Strand``, ``Start`` and ``End``. Naming something that is not a sort key raises
+``ValueError`` rather than being ignored:
+
+  >>> c.sort_ranges(sort_descending='Chromosome').head(4)
+    index  |    Chromosome        Start        End  Strand         peak
+    int64  |    category          int64      int64  category      int64
+  -------  ---  ------------  ---------  ---------  ----------  -------
+        5  |    chr21          40099618   40099643  +                64
+        7  |    chr19          19571102   19571127  +               120
+        3  |    chr14          19418999   19419024  -               821
+        4  |    chr12         106679761  106679786  -               782
+  PyRanges with 4 rows, 5 columns, and 1 index columns.
+  Contains 4 chromosomes and 2 strands.
+
+Note that ``use_strand=False`` does not remove ``Strand`` from the sort keys — it only stops
+intervals on the negative strand being ordered 5'→3'. To sort without grouping by strand,
+drop or rename the column first.

@@ -27,11 +27,16 @@ def return_pyranges_if_possible(
 
 
 # Define the Literal type
-VALID_OVERLAP_TYPE = Literal["first", "all", "last", "contained"]
+VALID_OVERLAP_TYPE = Literal["first", "all", "last"]
 
 # Extract the options from the Literal type
 VALID_OVERLAP_OPTIONS = list(get_args(VALID_OVERLAP_TYPE))
-OVERLAP_FIRST, OVERLAP_ALL, OVERLAP_LAST, OVERLAP_CONTAINED = VALID_OVERLAP_OPTIONS
+OVERLAP_FIRST, OVERLAP_ALL, OVERLAP_LAST = VALID_OVERLAP_OPTIONS
+
+# Removed in 1.3.12: 'contained' was declared here but rejected by ruranges, and it only
+# ever duplicated contained_intervals_only=True. Kept as a name so the migration error
+# below can point at the argument that replaces it.
+REMOVED_OVERLAP_CONTAINED = "contained"
 
 BY_ENTRY_IN_KWARGS = "__by__"
 
