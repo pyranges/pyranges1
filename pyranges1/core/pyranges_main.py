@@ -2357,6 +2357,10 @@ class PyRanges(RangeFrame):
             (NEAREST_UPSTREAM, FORWARD_STRAND): "backward",
             (NEAREST_UPSTREAM, REVERSE_STRAND): "forward",
         }
+        # Unpacked rather than zipped against VALID_GENOMIC_STRAND_INFO: pairing the
+        # halves with their strand by position would silently mismap if either the
+        # constant or split_on_strand's return order changed.
+        forward_self, reverse_self = split_on_strand(self)
         per_strand = [
             RangeFrame(strand_self).nearest_ranges(
                 other=_other,
@@ -2368,7 +2372,10 @@ class PyRanges(RangeFrame):
                 direction=coordinate_direction[direction, strand],
                 preserve_input_order=preserve_input_order,
             )
-            for strand, strand_self in zip(VALID_GENOMIC_STRAND_INFO, split_on_strand(self))
+            for strand, strand_self in (
+                (FORWARD_STRAND, forward_self),
+                (REVERSE_STRAND, reverse_self),
+            )
         ]
 
         return ensure_pyranges(pd.concat(per_strand))
