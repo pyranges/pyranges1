@@ -28,6 +28,18 @@ def _complement(
     if df.empty:
         return df
 
+    if include_first_interval:
+        below_origin = int((df[START_COL].to_numpy(copy=False) < 0).sum())
+        if below_origin:
+            msg = (
+                f"complement_ranges(include_first_interval=True) found {below_origin} "
+                f"interval{'s' if below_origin != 1 else ''} starting below zero. "
+                "The first complement interval runs from coordinate 0 up to the first "
+                "interval, which is not a valid range when that interval starts below "
+                "the origin."
+            )
+            raise ValueError(msg)
+
     col_order = [col for col in df if col in [*by, START_COL, END_COL]]
 
     factorized = pd.Series(np.zeros(len(df), dtype=np.uint32)) if not by else df.groupby(by).ngroup().astype(np.uint32)
@@ -66,6 +78,13 @@ def _complement(
         chrom_lens=chrom_lens,
         include_first_interval=include_first_interval,
     )
+
+    # An interval of non-positive length is not a valid range. The kernel emits one
+    # when the last interval ends exactly on the chromosome size: a terminal gap of
+    # zero length at Start == End == size.
+    keep = end > start
+    if not keep.all():
+        chrs, start, end, idxs = chrs[keep], start[keep], end[keep], idxs[keep]
 
     ids = df.take(idxs)  # type: ignore[arg-type]
 

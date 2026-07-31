@@ -393,9 +393,12 @@ class RangeFrame(pd.DataFrame):
         )
 
         if report_overlap_column:
-            res[report_overlap_column] = res[["End", "End" + suffix]].min(axis=1) - res[
-                ["Start", "Start" + suffix]
-            ].max(axis=1)
+            coordinates = [START_COL, END_COL, START_COL + suffix, END_COL + suffix]
+            overlap = res[[END_COL, END_COL + suffix]].min(axis=1) - res[[START_COL, START_COL + suffix]].max(axis=1)
+            # min/max skip nulls, so an unmatched row of a left, right or outer join
+            # would otherwise report the length of the interval that did match. A row
+            # with nothing on one side has no overlap to report.
+            res[report_overlap_column] = overlap.where(res[coordinates].notna().all(axis=1))
 
         res.index = res.index.astype(np.int64)
 
