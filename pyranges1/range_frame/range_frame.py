@@ -1,6 +1,6 @@
 import inspect
 import warnings
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable
 from typing import Any, TypeVar
 
 import numpy as np
@@ -757,6 +757,7 @@ class RangeFrame(pd.DataFrame):
         ...     _ = rf.sort_by_position()
         >>> caught[0].category.__name__
         'DeprecationWarning'
+
         """
         warnings.warn(
             "RangeFrame.sort_by_position is deprecated and will be removed in the next "
@@ -812,6 +813,7 @@ class RangeFrame(pd.DataFrame):
         ...
         ValueError: Invalid ranges:
           * 1 intervals are empty or negative length (end <= start). See indexes: 0
+
         """
         if reasons := InvalidRangesReason.formatted_reasons_list(self):
             msg = f"Invalid ranges:\n{reasons}"

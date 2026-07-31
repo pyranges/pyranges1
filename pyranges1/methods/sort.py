@@ -26,6 +26,10 @@ per-column order-preserving codes.
 import numpy as np
 import pandas as pd
 
+# The kernel takes exactly this many innermost coordinate-like keys (its
+# `starts` and `ends` arguments).
+_KERNEL_INNER_KEY_COUNT = 2
+
 
 def sort_one_by_one(d: pd.DataFrame, col1: str, col2: str) -> pd.DataFrame:
     """Equivalent to pd.sort_values(by=[col1, col2]), but faster."""
@@ -68,6 +72,7 @@ def resolve_sort_keys(
         If a key is not a column of the frame, or if ``sort_descending`` names
         something that is not a sort key. The latter is rejected rather than
         ignored, because a silently dropped name looks like a sort that worked.
+
     """
     keys: list[str] = []
     for name in [c for c in head if c not in by] + list(by) + [c for c in tail if c not in by]:
@@ -192,7 +197,7 @@ def sort_order(
 
     ruranges = require_ruranges()
 
-    split = max(len(keys) - 2, 0)
+    split = max(len(keys) - _KERNEL_INNER_KEY_COUNT, 0)
     outer, inner = keys[:split], keys[split:]
     outer_descending, inner_descending = descending[:split], descending[split:]
 
@@ -213,7 +218,7 @@ def sort_order(
             )
             for name, reverse in zip(inner, inner_descending, strict=True)
         ]
-        while len(values) < 2:
+        while len(values) < _KERNEL_INNER_KEY_COUNT:
             values.insert(0, np.zeros(len(df), dtype=np.int64))
         starts, ends = values
 
