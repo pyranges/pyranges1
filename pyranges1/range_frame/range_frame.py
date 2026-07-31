@@ -1,5 +1,6 @@
 import inspect
-from collections.abc import Callable, Iterable, Sequence
+import warnings
+from collections.abc import Callable, Iterable
 from typing import Any, TypeVar
 
 import numpy as np
@@ -33,7 +34,7 @@ from pyranges1.core.tostring import tohtml, tostring
 from pyranges1.methods.complement_overlaps import _complement_overlaps
 from pyranges1.methods.join import _both_dfs
 from pyranges1.methods.merge import _merge
-from pyranges1.methods.sort import sort_factorize_dict
+from pyranges1.methods.sort import resolve_sort_keys, sort_order
 from pyranges1.range_frame.range_frame_validator import InvalidRangesReason
 
 
@@ -616,23 +617,26 @@ class RangeFrame(pd.DataFrame):
         self: "RangeFrame",
         by: VALID_BY_TYPES = None,
         *,
-        natsort: bool = True,
-        sort_rows_reverse_order: Sequence[bool] | None = None,
+        sort_descending: VALID_BY_TYPES = None,
     ) -> "RangeFrame":
         """Sort RangeFrame according to Start, End, and any other columns given.
 
         For uses not covered by this function, use  DataFrame.sort_values().
 
+        String keys are ordered lexically, so ``t10`` comes before ``t9``. Natural
+        ordering exists for chromosome names, and a RangeFrame has no Chromosome
+        column; use :meth:`PyRanges.sort_ranges` when you want it.
+
         Parameters
         ----------
         by : str or list of str, default None
-            in the desired order as part of the 'by' argument.
+            Columns to sort on before Start and End. Naming Start or End here
+            moves that key out of its trailing position, which is how you sort by
+            a column *after* the coordinates.
 
-        natsort : bool, default False
-            Whether to use natural sorting for the columns in match_by.
-
-        sort_rows_reverse_order : sequence of bools or None
-            Whether to sort these rows in the reverse order for the starts and ends.
+        sort_descending : str or list of str, default None
+            Keys to sort in reverse. Every name must be one of the sort keys,
+            Start and End included; a name that is not raises ValueError.
 
         Returns
         -------
@@ -640,19 +644,37 @@ class RangeFrame(pd.DataFrame):
 
             Sorted RangeFrame. The index is preserved. Use .reset_index(drop=True) to reset the index.
 
+        Examples
+        --------
+        >>> import pyranges1 as pr
+        >>> rf = pr.RangeFrame({"Start": [10, 1, 5], "End": [12, 4, 6], "Name": ["c", "a", "b"]})
+        >>> rf.sort_ranges()
+          index  |      Start      End  Name
+          int64  |      int64    int64  str
+        -------  ---  -------  -------  ------
+              1  |          1        4  a
+              2  |          5        6  b
+              0  |         10       12  c
+        RangeFrame with 3 rows, 3 columns, and 1 index columns.
+
+        >>> rf.sort_ranges(sort_descending="Start")
+          index  |      Start      End  Name
+          int64  |      int64    int64  str
+        -------  ---  -------  -------  ------
+              0  |         10       12  c
+              2  |          5        6  b
+              1  |          1        4  a
+        RangeFrame with 3 rows, 3 columns, and 1 index columns.
+
         """
-        from pyranges1._ruranges import require_ruranges
-
-        ruranges = require_ruranges()
-
-        by = arg_to_list(by)
-        by_sort_order_as_int = sort_factorize_dict(self, by, use_natsort=natsort)
-        idxs = ruranges.numpy.sort_intervals(  # type: ignore[attr-defined]
-            by_sort_order_as_int,
-            self[START_COL].to_numpy(),
-            self[END_COL].to_numpy(),
-            sort_reverse_direction=np.array(sort_rows_reverse_order, dtype=bool) if sort_rows_reverse_order else None,
+        keys, descending = resolve_sort_keys(
+            self.columns,
+            head=[],
+            by=arg_to_list(by),
+            tail=RANGE_COLS,
+            sort_descending=arg_to_list(sort_descending),
         )
+        idxs = sort_order(self, keys, descending, use_natsort=False)
         return _mypy_ensure_rangeframe(self.take(idxs))  # type: ignore[arg-type]
 
     def subtract_overlaps(
@@ -717,13 +739,86 @@ class RangeFrame(pd.DataFrame):
         return _mypy_ensure_rangeframe(output)
 
     def sort_by_position(self) -> "RangeFrame":
-        """Sort by Start and End columns."""
+        """Sort by Start and End columns.
+
+        .. deprecated:: 1.4.1
+            Use :meth:`sort_ranges` with no arguments, which sorts by the same
+            columns. On :class:`PyRanges` this method is also a trap: it sorts
+            globally by position and ignores ``Chromosome``, which is almost
+            never what a caller wants. It will be removed in the next release.
+
+        Examples
+        --------
+        >>> import warnings
+        >>> import pyranges1 as pr
+        >>> rf = pr.RangeFrame({"Start": [10, 1], "End": [12, 4]})
+        >>> with warnings.catch_warnings(record=True) as caught:
+        ...     warnings.simplefilter("always")
+        ...     _ = rf.sort_by_position()
+        >>> caught[0].category.__name__
+        'DeprecationWarning'
+
+        """
+        warnings.warn(
+            "RangeFrame.sort_by_position is deprecated and will be removed in the next "
+            "release; use sort_ranges() instead, which sorts by the same columns. Note "
+            "that on PyRanges, sort_by_position ignores Chromosome while sort_ranges "
+            "does not.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return _mypy_ensure_rangeframe(self.sort_values(RANGE_COLS))
 
     def reasons_why_frame_is_invalid(self) -> list[InvalidRangesReason] | None:  # noqa: D102
         __doc__ = InvalidRangesReason.is_invalid_ranges_reasons.__doc__  # noqa: F841
 
         return InvalidRangesReason.is_invalid_ranges_reasons(self)
+
+    def ensure_valid_ranges(self) -> "RangeFrame":
+        """Return self unchanged, raising if the ranges are invalid.
+
+        PyRanges checks validity lazily, when a frame is displayed, so nothing
+        inside the library calls this. It is offered for callers who want the
+        check at a point of their choosing, and so that the same spelling works
+        across the PyRanges implementations.
+
+        Returns
+        -------
+        RangeFrame
+            self, unchanged.
+
+        Raises
+        ------
+        ValueError
+            If any interval is invalid; the message lists every reason.
+
+        See Also
+        --------
+        RangeFrame.reasons_why_frame_is_invalid : the reasons, without raising.
+
+        Examples
+        --------
+        >>> import pyranges1 as pr
+        >>> rf = pr.RangeFrame({"Start": [1, 10], "End": [5, 15]})
+        >>> rf.ensure_valid_ranges()
+          index  |      Start      End
+          int64  |      int64    int64
+        -------  ---  -------  -------
+              0  |          1        5
+              1  |         10       15
+        RangeFrame with 2 rows, 2 columns, and 1 index columns.
+
+        >>> pr.RangeFrame({"Start": [10], "End": [5]}).ensure_valid_ranges()
+        Traceback (most recent call last):
+        ...
+        ValueError: Invalid ranges:
+          * 1 intervals are empty or negative length (end <= start). See indexes: 0
+
+        """
+        if reasons := InvalidRangesReason.formatted_reasons_list(self):
+            msg = f"Invalid ranges:\n{reasons}"
+            raise ValueError(msg)
+        return self
 
     def copy(self, *args, **kwargs) -> "RangeFrame":  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D102
         return _mypy_ensure_rangeframe(super().copy(*args, **kwargs))
