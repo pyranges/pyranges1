@@ -643,9 +643,9 @@ class RangeFrame(pd.DataFrame):
         by = arg_to_list(by)
         by_sort_order_as_int = sort_factorize_dict(self, by, use_natsort=natsort)
         idxs = ruranges.numpy.sort_intervals(  # type: ignore[attr-defined]
-            by_sort_order_as_int,
             self[START_COL].to_numpy(),
             self[END_COL].to_numpy(),
+            groups=by_sort_order_as_int,
             sort_reverse_direction=np.array(sort_rows_reverse_order, dtype=bool) if sort_rows_reverse_order else None,
         )
         return _mypy_ensure_rangeframe(self.take(idxs))  # type: ignore[arg-type]
