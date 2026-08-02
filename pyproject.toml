@@ -37,9 +37,10 @@ add-ons = [
     "pyrle >= 0.0.43",
     "bamread",
     "pysam",
-    "pyarrow",
     "pyfaidx",
     "pyBigWig",
+    "pyarrow",
+    "pybigtools",
     "joblib",
 ] #"fisher",
 dev = [
@@ -86,6 +87,15 @@ legacy_tox_ini = """
 [tox]
 envlist = py312, py313
 
+# tox-gh (installed in CI) maps the GitHub Actions matrix Python to ONE env, so each
+# job runs only its own interpreter. Without this the full envlist runs on every
+# runner and fails where the other Python isn't installed (e.g. no 3.13 on the 3.12
+# ubuntu runner -> "could not find python interpreter matching ... python3.13").
+[gh]
+python =
+    3.12 = py312
+    3.13 = py313
+
 [testenv]
 basepython =
     py312: python3.12
@@ -96,6 +106,12 @@ deps =
     bamread
     pyBigWig
     pyfaidx
+    # optional-format readers/writers, so their doctests + tests run in CI
+    # instead of being importorskip-ped: pysam (SAM/CRAM/VCF), pyarrow (Parquet),
+    # pybigtools (bigBed).
+    pysam
+    pyarrow
+    pybigtools
     tox
     ruff == 0.14.1
     pandas-stubs<3
