@@ -167,7 +167,7 @@ class PyRanges(RangeFrame):
 
     """
 
-    def __new__(cls, *args, **kwargs) -> "pr.PyRanges | pd.DataFrame":  # type: ignore[misc]
+    def __new__(cls, *args, **kwargs) -> "pr.PyRanges":  # type: ignore[misc]
         """Create a new instance of a PyRanges object."""
         # __new__ is a special static method used for creating and
         # returning a new instance of a class. It is called before
