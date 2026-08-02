@@ -2992,7 +2992,7 @@ class PyRanges(RangeFrame):
         idxs = ruranges.numpy.sort_intervals(  # type: ignore[attr-defined]
             self[START_COL].to_numpy(),
             self[END_COL].to_numpy(),
-            by_sort_order_as_int,
+            groups=by_sort_order_as_int,
             sort_reverse_direction=None if not use_strand else (self[STRAND_COL] == "-").to_numpy(dtype=bool),
         )
         res = self.take(idxs)  # type: ignore[arg-type]
