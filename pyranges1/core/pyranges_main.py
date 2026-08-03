@@ -2,7 +2,7 @@
 
 import logging
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, cast
 
@@ -167,23 +167,28 @@ class PyRanges(RangeFrame):
 
     """
 
-    def __new__(cls, *args, **kwargs) -> "pr.PyRanges | pd.DataFrame":  # type: ignore[misc]
+    def __new__(cls, *args, **kwargs) -> "pr.PyRanges":  # type: ignore[misc]
         """Create a new instance of a PyRanges object."""
         # __new__ is a special static method used for creating and
         # returning a new instance of a class. It is called before
         # __init__ and is typically used in scenarios requiring
         # control over the creation of new instances
 
-        # Logic to decide whether to return an instance of PyRanges or a DataFrame
+        # Direct construction always yields a real PyRanges, or raises. The
+        # graceful fallback to a plain DataFrame (e.g. when a pandas operation
+        # like .drop() removes a required column) lives in _constructor instead,
+        # so it only kicks in for pandas' internal frame reconstruction and never
+        # for a user calling PyRanges(...) directly. See geopandas.GeoDataFrame
+        # for the same split between __init__ and _constructor.
         if not args and "data" not in kwargs:
-            df = pd.DataFrame({k: [] for k in GENOME_LOC_COLS})
-            df.__class__ = pr.PyRanges
-            return df
+            return super().__new__(cls)
 
-        df = pd.DataFrame(kwargs.get("../data") or args[0])
+        df = pd.DataFrame(kwargs.get("data") if "data" in kwargs else args[0])
         missing_any_required_columns = not set(GENOME_LOC_COLS).issubset({*df.columns})
         if missing_any_required_columns:
-            return df
+            missing = sorted(set(GENOME_LOC_COLS) - set(df.columns))
+            msg = f"Cannot construct PyRanges: missing required column(s) {missing}."
+            raise ValueError(msg)
 
         return super().__new__(cls)
 
@@ -201,8 +206,21 @@ class PyRanges(RangeFrame):
         self._loci = LociGetter(self)
 
     @property
-    def _constructor(self) -> type:
-        return pr.PyRanges
+    def _constructor(self) -> Callable[..., "pr.PyRanges | pd.DataFrame"]:
+        return self._pyranges_constructor_with_fallback
+
+    @classmethod
+    def _pyranges_constructor_with_fallback(cls, *args, **kwargs) -> "pr.PyRanges | pd.DataFrame":
+        """Build a PyRanges, falling back to a DataFrame if a required column is missing.
+
+        Used by pandas internally to reconstruct frames from operations (e.g. .drop(),
+        groupby aggregations). See the "Operations that remove a column required for a
+        PyRanges return a DataFrame instead" example above.
+        """
+        df = pd.DataFrame(*args, **kwargs)
+        if not set(GENOME_LOC_COLS).issubset({*df.columns}):
+            return df
+        return cls(df)
 
     def groupby(self, *args, **kwargs) -> "PyRangesDataFrameGroupBy":
         """Groupby PyRanges."""
@@ -4825,7 +4843,8 @@ class PyRanges(RangeFrame):
         """
         if not self.has_strand:
             return self
-        return self.drop_and_return(STRAND_COL, axis=1)
+        # Strand isn't a required column, so this drop can never fall back to a DataFrame.
+        return cast("PyRanges", self.drop_and_return(STRAND_COL, axis=1))
 
     def flip_strand(self: "PyRanges") -> "PyRanges":
         """Flip the strand of every interval (+ → - and - → +).
