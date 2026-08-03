@@ -1,7 +1,7 @@
 import inspect
 import warnings
 from collections.abc import Callable, Iterable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import numpy as np
 import pandas as pd
@@ -218,7 +218,9 @@ class RangeFrame(pd.DataFrame):
 
         cols_to_drop = list({start, end, start2, end2}.difference(RANGE_COLS) if drop_old_columns else {})
 
-        return z.drop_and_return(labels=cols_to_drop, axis="columns")
+        # cols_to_drop excludes RANGE_COLS (Start/End), so this drop can never remove a
+        # required column and fall back to a plain DataFrame.
+        return cast("RangeFrame", z.drop_and_return(labels=cols_to_drop, axis="columns"))
 
     def cluster_overlaps(
         self,
@@ -838,15 +840,15 @@ class RangeFrame(pd.DataFrame):
     def copy(self, *args, **kwargs) -> "RangeFrame":  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D102
         return _mypy_ensure_rangeframe(super().copy(*args, **kwargs))
 
-    def drop(self, *args, **kwargs) -> "RangeFrame | None":  # type: ignore[override]  # noqa: D102
-        return self.__class__(super().drop(*args, **kwargs))
+    def drop(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame | None":  # type: ignore[override]  # noqa: D102
+        return self._constructor(super().drop(*args, **kwargs))
 
-    def drop_and_return[T: "RangeFrame"](self: T, *args: Any, **kwargs: Any) -> T:  # noqa: PYI019, D102
+    def drop_and_return[T: "RangeFrame"](self: T, *args: Any, **kwargs: Any) -> "T | pd.DataFrame":  # noqa: PYI019, D102
         kwargs["inplace"] = False
-        return self.__class__(super().drop(*args, **kwargs))
+        return self._constructor(super().drop(*args, **kwargs))
 
-    def reindex(self, *args, **kwargs) -> "RangeFrame":  # noqa: D102
-        return self.__class__(super().reindex(*args, **kwargs))
+    def reindex(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame":  # noqa: D102
+        return self._constructor(super().reindex(*args, **kwargs))
 
 
 def _mypy_ensure_rangeframe(r: pd.DataFrame) -> "RangeFrame":
