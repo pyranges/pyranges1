@@ -40,6 +40,7 @@ from pyranges1.core.names import (
     VALID_JOIN_TYPE,
     VALID_OVERLAP_TYPE,
     VALID_STRAND_BEHAVIOR_TYPE,
+    VALID_TIES_TYPE,
     VALID_USE_STRAND_TYPE,
     CombineIntervalColumnsOperation,
 )
@@ -2157,6 +2158,7 @@ class PyRanges(RangeFrame):
         suffix: str = JOIN_SUFFIX,
         exclude_overlaps: bool = False,
         dist_col: str | None = "Distance",
+        ties: VALID_TIES_TYPE = "all",
         preserve_input_order: bool = True,
     ) -> "PyRanges":
         """Find closest interval.
@@ -2190,6 +2192,16 @@ class PyRanges(RangeFrame):
 
         dist_col : str or None
             Optional column to store the distance in.
+
+        ties : {"all", "first"}, default "all"
+            What to report when several intervals of `other` sit at the same distance.
+            "all" reports every one of them, "first" reports one per distance, so at
+            most `k` rows per interval of self. Which one is not specified, only that
+            the same input gives the same answer.
+
+            Overlapping intervals are all at distance 0, so unless `exclude_overlaps`
+            is set this decides whether an interval of self covered by many intervals
+            of other comes back once or once per overlap.
 
         preserve_input_order : bool, default True
             Whether to preserve the original input order in the result.
@@ -2288,6 +2300,19 @@ class PyRanges(RangeFrame):
         PyRanges with 3 rows, 7 columns, and 1 index columns (with 1 index duplicates).
         Contains 1 chromosomes.
 
+        Both intervals of right end at 6, so both are the same distance from chr1:10-14
+        and both are reported. ties="first" reports one of them, leaving one row per
+        interval of self:
+
+        >>> left.nearest_ranges(right, strand_behavior="ignore", dist_col=None, ties="first")
+          index  |    Chromosome      Start      End  Chromosome_b      Start_b    End_b  Hit_b
+          int64  |    str             int64    int64  str                 int64    int64  str
+        -------  ---  ------------  -------  -------  --------------  ---------  -------  -------
+              0  |    chr1               10       14  chr1                    1        6  second
+              1  |    chr1                1        2  chr1                    1        6  second
+        PyRanges with 2 rows, 7 columns, and 1 index columns.
+        Contains 1 chromosomes.
+
         >>> f1.nearest_ranges(f2, strand_behavior='ignore', exclude_overlaps=True)
           index  |    Chromosome      Start      End  Strand      Chromosome_b      Start_b    End_b  Strand_b      Distance
           int64  |    category        int64    int64  category    str                 int64    int64  str              int64
@@ -2339,6 +2364,7 @@ class PyRanges(RangeFrame):
                 k=k,
                 dist_col=dist_col,
                 direction="any",
+                ties=ties,
                 preserve_input_order=preserve_input_order,
             )
             return ensure_pyranges(res)
@@ -2381,6 +2407,7 @@ class PyRanges(RangeFrame):
                 k=k,
                 dist_col=dist_col,
                 direction=coordinate_direction[direction, strand],
+                ties=ties,
                 preserve_input_order=preserve_input_order,
             )
             for strand, strand_self in (
