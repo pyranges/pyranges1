@@ -116,6 +116,14 @@ VALID_COORDINATE_DIRECTION_OPTIONS = [
     BACKWARD_DIRECTION,
 ]
 
+# How many of the intervals sharing a reported distance come back. Every
+# interval a query overlaps is at distance 0, so this decides whether a query
+# in a dense region reports one row or one per overlap.
+TIES_ALL: Final = "all"
+TIES_FIRST: Final = "first"
+VALID_TIES_TYPE = Literal["all", "first"]
+VALID_TIES_OPTIONS = [TIES_ALL, TIES_FIRST]
+
 TEMP_INDEX_COL = "__temp_index__"
 TEMP_TYPE_COL = "__temp_type__"
 TEMP_START_COL = "__temp_start__"
