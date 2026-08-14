@@ -208,10 +208,10 @@ class PyRanges(RangeFrame):
 
     @property
     def _constructor(self) -> Callable[..., "pr.PyRanges | pd.DataFrame"]:
-        return self._pyranges_constructor_with_fallback
+        return self._constructor_with_fallback
 
     @classmethod
-    def _pyranges_constructor_with_fallback(cls, *args, **kwargs) -> "pr.PyRanges | pd.DataFrame":
+    def _constructor_with_fallback(cls, *args, **kwargs) -> "pr.PyRanges | pd.DataFrame":
         """Build a PyRanges, falling back to a DataFrame if a required column is missing.
 
         Used by pandas internally to reconstruct frames from operations (e.g. .drop(),

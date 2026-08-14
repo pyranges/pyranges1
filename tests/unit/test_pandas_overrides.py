@@ -236,3 +236,28 @@ def test_groupby_getattr_series_as_index_false(gr) -> None:
     res = result.agg("first")
     # DataFrame because as_index=False
     assert isinstance(res, pd.DataFrame)
+
+
+def test_drop(gr) -> None:
+    assert type(gr.drop("Val", axis=1)) is pr.PyRanges
+
+    # dropping a column a PyRanges requires degrades to a DataFrame
+    assert type(gr.drop("Chromosome", axis=1)) is pd.DataFrame
+
+
+def test_drop_and_return(gr) -> None:
+    assert type(gr.drop_and_return("Val", axis=1)) is pr.PyRanges
+    assert type(gr.drop_and_return("Chromosome", axis=1)) is pd.DataFrame
+
+
+def test_reindex(gr) -> None:
+    assert type(gr.reindex(columns=["Chromosome", "Start", "End"])) is pr.PyRanges
+    assert type(gr.reindex(columns=["Start", "End"])) is pd.DataFrame
+
+
+def test_range_frame_never_degrades() -> None:
+    # a RangeFrame requires no columns, so these always stay a RangeFrame
+    rf = pr.RangeFrame({"Start": [0, 10], "End": [40, 20], "Val": [50, 30]})
+    assert type(rf.drop("Val", axis=1)) is pr.RangeFrame
+    assert type(rf.drop_and_return("Val", axis=1)) is pr.RangeFrame
+    assert type(rf.reindex(columns=["Start"])) is pr.RangeFrame
