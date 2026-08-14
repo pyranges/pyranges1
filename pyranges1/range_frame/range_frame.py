@@ -23,6 +23,8 @@ from pyranges1.core.names import (
     VALID_COORDINATE_DIRECTION_TYPE,
     VALID_JOIN_TYPE,
     VALID_OVERLAP_TYPE,
+    VALID_TIES_OPTIONS,
+    VALID_TIES_TYPE,
     CombineIntervalColumnsOperation,
 )
 from pyranges1.core.pyranges_helpers import (
@@ -471,6 +473,7 @@ class RangeFrame(pd.DataFrame):
         k: int = 1,
         dist_col: str | None = "Distance",
         direction: VALID_COORDINATE_DIRECTION_TYPE = "any",
+        ties: VALID_TIES_TYPE = "all",
         preserve_input_order: bool = True,
     ) -> "RangeFrame":
         """Find closest interval.
@@ -500,6 +503,16 @@ class RangeFrame(pd.DataFrame):
         dist_col : str or None
             Optional column to store the distance in.
 
+        ties : {"all", "first"}, default "all"
+            What to report when several intervals of `other` sit at the same distance.
+            "all" reports every one of them, "first" reports one per distance, so at
+            most `k` rows per interval of self. Which one is not specified, only that
+            the same input gives the same answer.
+
+            Overlapping intervals are all at distance 0, so unless `exclude_overlaps`
+            is set this decides whether an interval of self covered by many intervals
+            of other comes back once or once per overlap.
+
         preserve_input_order : bool, default True
             Whether to preserve the original input order in the result.
 
@@ -518,6 +531,10 @@ class RangeFrame(pd.DataFrame):
 
         """
         from pyranges1._ruranges import require_ruranges
+
+        if ties not in VALID_TIES_OPTIONS:
+            msg = f"ties must be one of {VALID_TIES_OPTIONS}; got {ties!r}"
+            raise ValueError(msg)
 
         if direction not in VALID_COORDINATE_DIRECTION_OPTIONS:
             # Without this the value reaches ruranges, which panics with
@@ -544,6 +561,7 @@ class RangeFrame(pd.DataFrame):
             slack=0,
             include_overlaps=not exclude_overlaps,
             direction=direction,
+            ties=ties,
             sort_output=preserve_input_order,
         )
 
