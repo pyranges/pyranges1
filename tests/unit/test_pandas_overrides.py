@@ -1,5 +1,7 @@
 """Test that overriden pandas methods work and return PyRanges objects."""
 
+import pickle
+
 import pandas as pd
 import pandas.core.groupby
 import pytest
@@ -261,3 +263,28 @@ def test_range_frame_never_degrades() -> None:
     assert type(rf.drop("Val", axis=1)) is pr.RangeFrame
     assert type(rf.drop_and_return("Val", axis=1)) is pr.RangeFrame
     assert type(rf.reindex(columns=["Start"])) is pr.RangeFrame
+
+
+def test_rebuilt_frames_are_pyranges(gr) -> None:
+    # pandas builds these from a block manager, without going through PyRanges(...)
+    assert type(gr.head(1)) is pr.PyRanges
+    assert type(gr[gr.Start >= 0]) is pr.PyRanges
+    assert type(gr.copy()) is pr.PyRanges
+    assert type(gr.reset_index(drop=True)) is pr.PyRanges
+
+
+def test_loci_survives_a_rebuild(gr) -> None:
+    # the loci accessor is built on demand, because pandas rebuilds frames without __init__
+    assert len(gr.head(1).loci["chr1"]) == 1
+    assert len(gr.copy().loci["chr1"]) == 2
+
+
+def test_loci_survives_a_pickle_roundtrip(gr) -> None:
+    unpickled = pickle.loads(pickle.dumps(gr))  # noqa: S301
+    assert type(unpickled) is pr.PyRanges
+    assert len(unpickled.loci["chr1"]) == 2
+
+
+def test_data_can_be_passed_by_keyword() -> None:
+    df = pd.DataFrame({"Chromosome": ["chr1"], "Start": [0], "End": [40]})
+    assert type(pr.PyRanges(data=df)) is pr.PyRanges

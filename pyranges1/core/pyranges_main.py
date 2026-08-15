@@ -168,6 +168,10 @@ class PyRanges(RangeFrame):
 
     """
 
+    # built on first use by the loci property: pandas builds frames from a manager without
+    # ever calling __init__, so this cannot be set there alone.
+    _loci: "LociGetter | None" = None
+
     def __new__(cls, *args, **kwargs) -> "pr.PyRanges":  # type: ignore[misc]
         """Create a new instance of a PyRanges object."""
         # __new__ is a special static method used for creating and
@@ -184,10 +188,18 @@ class PyRanges(RangeFrame):
         if not args and "data" not in kwargs:
             return super().__new__(cls)
 
-        df = pd.DataFrame(kwargs.get("data") if "data" in kwargs else args[0])
-        missing_any_required_columns = not set(GENOME_LOC_COLS).issubset({*df.columns})
+        # pandas hands us a whole DataFrame every time it rebuilds a frame internally, so read
+        # the columns off it rather than building a second frame just to look at them; a call
+        # that names the columns on the way in still has to be built before they can be read.
+        data = kwargs["data"] if "data" in kwargs else args[0]
+        if isinstance(data, pd.DataFrame) and "columns" not in kwargs:
+            columns = data.columns
+        else:
+            columns = pd.DataFrame(*args, **kwargs).columns
+
+        missing_any_required_columns = not set(GENOME_LOC_COLS).issubset({*columns})
         if missing_any_required_columns:
-            missing = sorted(set(GENOME_LOC_COLS) - set(df.columns))
+            missing = sorted(set(GENOME_LOC_COLS) - set(columns))
             msg = f"Cannot construct PyRanges: missing required column(s) {missing}."
             raise ValueError(msg)
 
@@ -204,11 +216,22 @@ class PyRanges(RangeFrame):
 
         super().__init__(*args, **kwargs)
 
-        self._loci = LociGetter(self)
-
     @property
     def _constructor(self) -> Callable[..., "pr.PyRanges | pd.DataFrame"]:
         return self._constructor_with_fallback
+
+    def _constructor_from_mgr(self, mgr, axes) -> "pr.PyRanges | pd.DataFrame":
+        """Build a frame from a block manager, which is how pandas rebuilds one internally.
+
+        pandas' own version routes a rebuild through PyRanges(DataFrame(...)), building and
+        validating two more frames on the way; from the manager we can do neither. A frame
+        that lost a required column cannot be a PyRanges, so it comes back a plain DataFrame.
+        """
+        # _from_mgr is pandas' own way of doing this (see DataFrame._constructor_from_mgr);
+        # pandas-stubs does not declare it, hence the ignores.
+        if not set(GENOME_LOC_COLS).issubset({*axes[0]}):
+            return pd.DataFrame._from_mgr(mgr, axes=axes)  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
+        return type(self)._from_mgr(mgr, axes=axes)  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
 
     @classmethod
     def _constructor_with_fallback(cls, *args, **kwargs) -> "pr.PyRanges | pd.DataFrame":
@@ -427,6 +450,8 @@ class PyRanges(RangeFrame):
         TypeError: The loci accessor does not accept a list. If you meant to retrieve columns, use get_with_loc_columns instead.
 
         """
+        if self._loci is None:
+            self._loci = LociGetter(self)
         return self._loci
 
     def _chrom_and_strand_info(self) -> str:

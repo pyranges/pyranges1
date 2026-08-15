@@ -870,15 +870,24 @@ class RangeFrame(pd.DataFrame):
         """
         return cls(*args, **kwargs)
 
+    def _rebuild_as_self(self, result: Any) -> Any:
+        """Return result as our own class, building it only if pandas did not already."""
+        # _constructor_from_mgr already hands back our class, or a DataFrame when the frame
+        # lost a column we require; rebuilding either one costs two more frames and buys
+        # nothing.
+        if result is None or type(result) is type(self):
+            return result
+        return self._constructor_with_fallback(result)
+
     def drop(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame | None":  # type: ignore[override]  # noqa: D102
-        return self._constructor_with_fallback(super().drop(*args, **kwargs))
+        return self._rebuild_as_self(super().drop(*args, **kwargs))
 
     def drop_and_return(self, *args: Any, **kwargs: Any) -> "RangeFrame | pd.DataFrame":  # noqa: D102
         kwargs["inplace"] = False
-        return self._constructor_with_fallback(super().drop(*args, **kwargs))
+        return self._rebuild_as_self(super().drop(*args, **kwargs))
 
     def reindex(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame":  # noqa: D102
-        return self._constructor_with_fallback(super().reindex(*args, **kwargs))
+        return self._rebuild_as_self(super().reindex(*args, **kwargs))
 
 
 def _mypy_ensure_rangeframe(r: pd.DataFrame) -> "RangeFrame":
