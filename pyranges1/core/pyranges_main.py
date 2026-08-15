@@ -168,6 +168,10 @@ class PyRanges(RangeFrame):
 
     """
 
+    # a frame that loses one of these is no longer a PyRanges: RangeFrame._constructor_from_mgr
+    # rebuilds it as a plain DataFrame.
+    _required_columns: frozenset[str] = frozenset(GENOME_LOC_COLS)
+
     # built on first use by the loci property: pandas builds frames from a manager without
     # ever calling __init__, so this cannot be set there alone.
     _loci: "LociGetter | None" = None
@@ -219,19 +223,6 @@ class PyRanges(RangeFrame):
     @property
     def _constructor(self) -> Callable[..., "pr.PyRanges | pd.DataFrame"]:
         return self._constructor_with_fallback
-
-    def _constructor_from_mgr(self, mgr, axes) -> "pr.PyRanges | pd.DataFrame":
-        """Build a frame from a block manager, which is how pandas rebuilds one internally.
-
-        pandas' own version routes a rebuild through PyRanges(DataFrame(...)), building and
-        validating two more frames on the way; from the manager we can do neither. A frame
-        that lost a required column cannot be a PyRanges, so it comes back a plain DataFrame.
-        """
-        # _from_mgr is pandas' own way of doing this (see DataFrame._constructor_from_mgr);
-        # pandas-stubs does not declare it, hence the ignores.
-        if not set(GENOME_LOC_COLS).issubset({*axes[0]}):
-            return pd.DataFrame._from_mgr(mgr, axes=axes)  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
-        return type(self)._from_mgr(mgr, axes=axes)  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
 
     @classmethod
     def _constructor_with_fallback(cls, *args, **kwargs) -> "pr.PyRanges | pd.DataFrame":
@@ -799,7 +790,8 @@ class PyRanges(RangeFrame):
 
     def copy(self, *args, **kwargs) -> "pr.PyRanges":
         """Return a copy of the PyRanges."""
-        return ensure_pyranges(super().copy(*args, **kwargs))
+        # a copy keeps every column, so pandas hands this straight back as our own class
+        return self._rebuild_as_self(super().copy(*args, **kwargs))
 
     def _count_overlaps(
         self,

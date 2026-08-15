@@ -257,12 +257,20 @@ def test_reindex(gr) -> None:
     assert type(gr.reindex(columns=["Start", "End"])) is pd.DataFrame
 
 
-def test_range_frame_never_degrades() -> None:
-    # a RangeFrame requires no columns, so these always stay a RangeFrame
+def test_rebuilt_frames_are_rangeframes() -> None:
     rf = pr.RangeFrame({"Start": [0, 10], "End": [40, 20], "Val": [50, 30]})
     assert type(rf.drop("Val", axis=1)) is pr.RangeFrame
     assert type(rf.drop_and_return("Val", axis=1)) is pr.RangeFrame
-    assert type(rf.reindex(columns=["Start"])) is pr.RangeFrame
+    assert type(rf.reindex(columns=["Start", "End"])) is pr.RangeFrame
+    assert type(rf.head(1)) is pr.RangeFrame
+    assert type(rf[rf.Start >= 0]) is pr.RangeFrame
+    assert type(rf.copy()) is pr.RangeFrame
+    assert type(rf[["Start", "End"]]) is pr.RangeFrame
+
+    # ... and a frame without Start and End is not one, since none of its methods would work
+    assert type(rf.reindex(columns=["Start"])) is pd.DataFrame
+    assert type(rf.drop("Start", axis=1)) is pd.DataFrame
+    assert type(rf[["Val"]]) is pd.DataFrame
 
 
 def test_rebuilt_frames_are_pyranges(gr) -> None:
