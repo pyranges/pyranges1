@@ -11,7 +11,7 @@ from pyranges1.core.names import (
     VALID_BY_TYPES,
     VALID_OVERLAP_TYPE,
 )
-from pyranges1.core.pyranges_helpers import factorize_binary
+from pyranges1.core.pyranges_helpers import factorize_binary, validate_and_convert_multiple
 
 if TYPE_CHECKING:
     from pyranges1 import RangeFrame
@@ -30,6 +30,9 @@ def _both_idxs(
     from pyranges1._ruranges import require_ruranges
 
     ruranges = require_ruranges()
+
+    # ruranges panics rather than raising on an unknown overlap type, so reject it here.
+    multiple = validate_and_convert_multiple(multiple)
 
     f1, f2 = factorize_binary(df, df2, by)
     idx1, idx2 = ruranges.numpy.overlaps(

@@ -1,5 +1,6 @@
 import inspect
-from collections.abc import Callable, Iterable, Sequence
+import warnings
+from collections.abc import Callable, Iterable
 from typing import Any, TypeVar
 
 import numpy as np
@@ -18,17 +19,25 @@ from pyranges1.core.names import (
     START_COL,
     VALID_BY_TYPES,
     VALID_COMBINE_OPTIONS,
-    VALID_DIRECTION_TYPE,
+    VALID_COORDINATE_DIRECTION_OPTIONS,
+    VALID_COORDINATE_DIRECTION_TYPE,
     VALID_JOIN_TYPE,
     VALID_OVERLAP_TYPE,
+    VALID_TIES_OPTIONS,
+    VALID_TIES_TYPE,
     CombineIntervalColumnsOperation,
 )
-from pyranges1.core.pyranges_helpers import arg_to_list, factorize, factorize_binary
+from pyranges1.core.pyranges_helpers import (
+    arg_to_list,
+    factorize,
+    factorize_binary,
+    validate_and_convert_overlap_multiple,
+)
 from pyranges1.core.tostring import tohtml, tostring
 from pyranges1.methods.complement_overlaps import _complement_overlaps
 from pyranges1.methods.join import _both_dfs
 from pyranges1.methods.merge import _merge
-from pyranges1.methods.sort import sort_factorize_dict
+from pyranges1.methods.sort import resolve_sort_keys, sort_order
 from pyranges1.range_frame.range_frame_validator import InvalidRangesReason
 
 
@@ -387,9 +396,12 @@ class RangeFrame(pd.DataFrame):
         )
 
         if report_overlap_column:
-            res[report_overlap_column] = res[["End", "End" + suffix]].min(axis=1) - res[
-                ["Start", "Start" + suffix]
-            ].max(axis=1)
+            coordinates = [START_COL, END_COL, START_COL + suffix, END_COL + suffix]
+            overlap = res[[END_COL, END_COL + suffix]].min(axis=1) - res[[START_COL, START_COL + suffix]].max(axis=1)
+            # min/max skip nulls, so an unmatched row of a left, right or outer join
+            # would otherwise report the length of the interval that did match. A row
+            # with nothing on one side has no overlap to report.
+            res[report_overlap_column] = overlap.where(res[coordinates].notna().all(axis=1))
 
         res.index = res.index.astype(np.int64)
 
@@ -458,7 +470,8 @@ class RangeFrame(pd.DataFrame):
         exclude_overlaps: bool = False,
         k: int = 1,
         dist_col: str | None = "Distance",
-        direction: VALID_DIRECTION_TYPE = "any",
+        direction: VALID_COORDINATE_DIRECTION_TYPE = "any",
+        ties: VALID_TIES_TYPE = "all",
         preserve_input_order: bool = True,
     ) -> "RangeFrame":
         """Find closest interval.
@@ -488,6 +501,16 @@ class RangeFrame(pd.DataFrame):
         dist_col : str or None
             Optional column to store the distance in.
 
+        ties : {"all", "first"}, default "all"
+            What to report when several intervals of `other` sit at the same distance.
+            "all" reports every one of them, "first" reports one per distance, so at
+            most `k` rows per interval of self. Which one is not specified, only that
+            the same input gives the same answer.
+
+            Overlapping intervals are all at distance 0, so unless `exclude_overlaps`
+            is set this decides whether an interval of self covered by many intervals
+            of other comes back once or once per overlap.
+
         preserve_input_order : bool, default True
             Whether to preserve the original input order in the result.
 
@@ -507,6 +530,21 @@ class RangeFrame(pd.DataFrame):
         """
         from pyranges1._ruranges import require_ruranges
 
+        if ties not in VALID_TIES_OPTIONS:
+            msg = f"ties must be one of {VALID_TIES_OPTIONS}; got {ties!r}"
+            raise ValueError(msg)
+
+        if direction not in VALID_COORDINATE_DIRECTION_OPTIONS:
+            # Without this the value reaches ruranges, which panics with
+            # "Invalid direction string". A PanicException is not an Exception,
+            # so `except Exception` cannot catch it and the caller is aborted.
+            msg = (
+                f"direction must be one of {VALID_COORDINATE_DIRECTION_OPTIONS}; got {direction!r}. "
+                "'upstream' and 'downstream' are strand-aware and live on "
+                "PyRanges.nearest_ranges; a RangeFrame has no Strand column."
+            )
+            raise ValueError(msg)
+
         ruranges = require_ruranges()
 
         f1, f2 = factorize_binary(self, other, match_by)
@@ -521,6 +559,7 @@ class RangeFrame(pd.DataFrame):
             slack=0,
             include_overlaps=not exclude_overlaps,
             direction=direction,
+            ties=ties,
             sort_output=preserve_input_order,
         )
 
@@ -540,9 +579,9 @@ class RangeFrame(pd.DataFrame):
     def overlap(
         self,
         other: "RangeFrame",
-        multiple: VALID_OVERLAP_TYPE = "all",
         slack: int = 0,
         *,
+        multiple: bool = False,
         contained_intervals_only: bool = False,
         match_by: VALID_BY_TYPES = None,
         preserve_input_order: bool = True,
@@ -556,11 +595,11 @@ class RangeFrame(pd.DataFrame):
         other : RangeFrame
             RangeFrame to find overlaps with.
 
-        multiple : {"all", "first", "last"}, default "all"
-            What intervals to report when multiple intervals in 'other' overlap with the same interval in self.
-            The default "all" reports all overlapping subintervals, which will have duplicate indices.
-            "first" reports only, for each interval in self, the overlapping subinterval with smallest Start in 'other'
-            "last" reports only the overlapping subinterval with the biggest End in 'other'
+        multiple : bool, default False
+            What to report when several intervals of 'other' overlap the same interval of self.
+            False reports each interval of self at most once; True reports it once per overlap,
+            potentially resulting in duplicate indices. Only intervals of self are returned, so
+            this option changes how many rows appear, never their content.
 
         slack : int, default 0
             Intervals in self are temporarily extended by slack on both ends before overlap is calculated, so that
@@ -600,7 +639,7 @@ class RangeFrame(pd.DataFrame):
             other,
             by=by,
             slack=slack,
-            multiple=multiple,
+            multiple=validate_and_convert_overlap_multiple(multiple),
             contained=contained_intervals_only,
             preserve_input_order=preserve_input_order,
         )
@@ -611,23 +650,26 @@ class RangeFrame(pd.DataFrame):
         self: "RangeFrame",
         by: VALID_BY_TYPES = None,
         *,
-        natsort: bool = True,
-        sort_rows_reverse_order: Sequence[bool] | None = None,
+        sort_descending: VALID_BY_TYPES = None,
     ) -> "RangeFrame":
         """Sort RangeFrame according to Start, End, and any other columns given.
 
         For uses not covered by this function, use  DataFrame.sort_values().
 
+        String keys are ordered lexically, so ``t10`` comes before ``t9``. Natural
+        ordering exists for chromosome names, and a RangeFrame has no Chromosome
+        column; use :meth:`PyRanges.sort_ranges` when you want it.
+
         Parameters
         ----------
         by : str or list of str, default None
-            in the desired order as part of the 'by' argument.
+            Columns to sort on before Start and End. Naming Start or End here
+            moves that key out of its trailing position, which is how you sort by
+            a column *after* the coordinates.
 
-        natsort : bool, default False
-            Whether to use natural sorting for the columns in match_by.
-
-        sort_rows_reverse_order : sequence of bools or None
-            Whether to sort these rows in the reverse order for the starts and ends.
+        sort_descending : str or list of str, default None
+            Keys to sort in reverse. Every name must be one of the sort keys,
+            Start and End included; a name that is not raises ValueError.
 
         Returns
         -------
@@ -635,19 +677,37 @@ class RangeFrame(pd.DataFrame):
 
             Sorted RangeFrame. The index is preserved. Use .reset_index(drop=True) to reset the index.
 
+        Examples
+        --------
+        >>> import pyranges1 as pr
+        >>> rf = pr.RangeFrame({"Start": [10, 1, 5], "End": [12, 4, 6], "Name": ["c", "a", "b"]})
+        >>> rf.sort_ranges()
+          index  |      Start      End  Name
+          int64  |      int64    int64  str
+        -------  ---  -------  -------  ------
+              1  |          1        4  a
+              2  |          5        6  b
+              0  |         10       12  c
+        RangeFrame with 3 rows, 3 columns, and 1 index columns.
+
+        >>> rf.sort_ranges(sort_descending="Start")
+          index  |      Start      End  Name
+          int64  |      int64    int64  str
+        -------  ---  -------  -------  ------
+              0  |         10       12  c
+              2  |          5        6  b
+              1  |          1        4  a
+        RangeFrame with 3 rows, 3 columns, and 1 index columns.
+
         """
-        from pyranges1._ruranges import require_ruranges
-
-        ruranges = require_ruranges()
-
-        by = arg_to_list(by)
-        by_sort_order_as_int = sort_factorize_dict(self, by, use_natsort=natsort)
-        idxs = ruranges.numpy.sort_intervals(  # type: ignore[attr-defined]
-            self[START_COL].to_numpy(),
-            self[END_COL].to_numpy(),
-            groups=by_sort_order_as_int,
-            sort_reverse_direction=np.array(sort_rows_reverse_order, dtype=bool) if sort_rows_reverse_order else None,
+        keys, descending = resolve_sort_keys(
+            self.columns,
+            head=[],
+            by=arg_to_list(by),
+            tail=RANGE_COLS,
+            sort_descending=arg_to_list(sort_descending),
         )
+        idxs = sort_order(self, keys, descending, use_natsort=False)
         return _mypy_ensure_rangeframe(self.take(idxs))  # type: ignore[arg-type]
 
     def subtract_overlaps(
@@ -712,13 +772,86 @@ class RangeFrame(pd.DataFrame):
         return _mypy_ensure_rangeframe(output)
 
     def sort_by_position(self) -> "RangeFrame":
-        """Sort by Start and End columns."""
+        """Sort by Start and End columns.
+
+        .. deprecated:: 1.4.1
+            Use :meth:`sort_ranges` with no arguments, which sorts by the same
+            columns. On :class:`PyRanges` this method is also a trap: it sorts
+            globally by position and ignores ``Chromosome``, which is almost
+            never what a caller wants. It will be removed in the next release.
+
+        Examples
+        --------
+        >>> import warnings
+        >>> import pyranges1 as pr
+        >>> rf = pr.RangeFrame({"Start": [10, 1], "End": [12, 4]})
+        >>> with warnings.catch_warnings(record=True) as caught:
+        ...     warnings.simplefilter("always")
+        ...     _ = rf.sort_by_position()
+        >>> caught[0].category.__name__
+        'DeprecationWarning'
+
+        """
+        warnings.warn(
+            "RangeFrame.sort_by_position is deprecated and will be removed in the next "
+            "release; use sort_ranges() instead, which sorts by the same columns. Note "
+            "that on PyRanges, sort_by_position ignores Chromosome while sort_ranges "
+            "does not.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return _mypy_ensure_rangeframe(self.sort_values(RANGE_COLS))
 
     def reasons_why_frame_is_invalid(self) -> list[InvalidRangesReason] | None:  # noqa: D102
         __doc__ = InvalidRangesReason.is_invalid_ranges_reasons.__doc__  # noqa: F841
 
         return InvalidRangesReason.is_invalid_ranges_reasons(self)
+
+    def ensure_valid_ranges(self) -> "RangeFrame":
+        """Return self unchanged, raising if the ranges are invalid.
+
+        PyRanges checks validity lazily, when a frame is displayed, so nothing
+        inside the library calls this. It is offered for callers who want the
+        check at a point of their choosing, and so that the same spelling works
+        across the PyRanges implementations.
+
+        Returns
+        -------
+        RangeFrame
+            self, unchanged.
+
+        Raises
+        ------
+        ValueError
+            If any interval is invalid; the message lists every reason.
+
+        See Also
+        --------
+        RangeFrame.reasons_why_frame_is_invalid : the reasons, without raising.
+
+        Examples
+        --------
+        >>> import pyranges1 as pr
+        >>> rf = pr.RangeFrame({"Start": [1, 10], "End": [5, 15]})
+        >>> rf.ensure_valid_ranges()
+          index  |      Start      End
+          int64  |      int64    int64
+        -------  ---  -------  -------
+              0  |          1        5
+              1  |         10       15
+        RangeFrame with 2 rows, 2 columns, and 1 index columns.
+
+        >>> pr.RangeFrame({"Start": [10], "End": [5]}).ensure_valid_ranges()
+        Traceback (most recent call last):
+        ...
+        ValueError: Invalid ranges:
+          * 1 intervals are empty or negative length (end <= start). See indexes: 0
+
+        """
+        if reasons := InvalidRangesReason.formatted_reasons_list(self):
+            msg = f"Invalid ranges:\n{reasons}"
+            raise ValueError(msg)
+        return self
 
     def copy(self, *args, **kwargs) -> "RangeFrame":  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D102
         return _mypy_ensure_rangeframe(super().copy(*args, **kwargs))
