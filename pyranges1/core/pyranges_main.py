@@ -2422,7 +2422,9 @@ class PyRanges(RangeFrame):
         slack : int, default 0
             Intervals in self are temporarily extended by slack on both ends before overlap is calculated, so that
             we allow non-overlapping intervals to be considered overlapping if they are within less than slack distance
-            e.g. slack=1 reports bookended intervals.
+            e.g. slack=1 reports bookended intervals. A negative slack contracts them instead, and one shorter than
+            twice the slack contracts past itself; with contained_intervals_only such an interval is empty and is
+            reported for every target whose span covers the point it contracted to.
 
         multiple : bool, default False
             What intervals to report when multiple intervals in 'other' overlap with the same interval in self.
@@ -2570,6 +2572,10 @@ class PyRanges(RangeFrame):
         PyRanges with 4 rows, 4 columns, and 1 index columns.
         Contains 2 chromosomes.
 
+        A negative slack contracts each interval in *self* before the comparison, and an interval
+        shorter than twice the slack contracts past itself. Such an interval is empty, so containment
+        holds for every target whose span covers the point it contracted to -- chr1 10-11 below:
+
         >>> gr.overlap(gr2, contained_intervals_only=True, slack=-2)
           index  |    Chromosome      Start      End  ID
           int64  |    str             int64    int64  str
@@ -2577,7 +2583,8 @@ class PyRanges(RangeFrame):
               0  |    chr1                1        3  A
               1  |    chr1                1        3  a
               2  |    chr2                4        9  b
-        PyRanges with 3 rows, 4 columns, and 1 index columns.
+              3  |    chr1               10       11  c
+        PyRanges with 4 rows, 4 columns, and 1 index columns.
         Contains 2 chromosomes.
 
         >>> gr3 = pr.PyRanges({"Chromosome": 1, "Start": [2, 4], "End": [3, 5], "Strand": ["+", "-"]})
