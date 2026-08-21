@@ -79,6 +79,11 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
     If you just want to create a PyRanges from a tab-delimited bed-like file,
     use `pr.PyRanges(pandas.read_table(f))` instead.
 
+    If `pyarrow` is installed, the file is parsed on every core rather than one,
+    which is 10-18x faster on large files; the result is identical either way.
+    Install it with `pip install pyranges1[fast-io]` (also included in
+    `[add-ons]` and `[all]`).
+
     Returns
     -------
     PyRanges

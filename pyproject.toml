@@ -35,9 +35,12 @@ dependencies = ["pandas", "tabulate", "natsort", "ruranges>=0.1.8", "gtfreader>=
 [project.optional-dependencies]
 # pyarrow makes read_bed 10-18x faster on large files by parsing on every core
 # instead of one. It is optional: without it read_bed falls back to pandas and
-# returns exactly the same frame, just more slowly.
+# returns exactly the same frame, just more slowly. Kept as its own extra so it
+# can be installed without the heavier add-ons, and included in add-ons so that
+# `pyranges1[add-ons]` and `pyranges1[all]` both get it.
 fast-io = ["pyarrow"]
 add-ons = [
+    "pyranges1[fast-io]",
     "pyrle >= 0.0.43",
     "bamread",
     "pyfaidx",

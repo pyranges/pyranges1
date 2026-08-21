@@ -81,6 +81,14 @@ Installation including all optional dependencies:
 pip install pyranges1[all]
 ```
 
+For faster file reading, install `pyarrow`. `read_bed` then parses on every
+core instead of one, which is 10-18x faster on large files and returns exactly
+the same frame:
+
+```bash
+pip install pyranges1[fast-io]   # or [add-ons], or [all]
+```
+
 Details at https://pyranges1.readthedocs.io/en/latest/installation.html
 
 
