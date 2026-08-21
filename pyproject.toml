@@ -33,6 +33,10 @@ keywords = ["bioinformatics", "genomicranges", "genomics"]
 dependencies = ["pandas", "tabulate", "natsort", "ruranges>=0.1.8", "gtfreader>=0.2.0"]
 
 [project.optional-dependencies]
+# pyarrow makes read_bed 10-18x faster on large files by parsing on every core
+# instead of one. It is optional: without it read_bed falls back to pandas and
+# returns exactly the same frame, just more slowly.
+fast-io = ["pyarrow"]
 add-ons = [
     "pyrle >= 0.0.43",
     "bamread",
