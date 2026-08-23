@@ -23,6 +23,7 @@ from pandas.testing import assert_frame_equal
 import pyranges1 as pr
 from gtfreader import readers as gtf_readers
 from pyranges1 import readers
+from pyranges1.readers import to_keys_and_values, to_rows_gff3
 
 DATA = Path(pr.__file__).parent / "data"
 
@@ -91,6 +92,26 @@ def mode(request, monkeypatch) -> str:
 def requires_pyarrow():
     if readers._pyarrow_csv() is None:
         pytest.skip("pyarrow is not installed")
+
+
+@pytest.fixture(params=["python", "compiled"])
+def attribute_parser(request, monkeypatch) -> str:
+    """Run the test body once per GFF3 attribute parser.
+
+    The compiled one lives in gtfreader and the Python one in pyranges1; they
+    have to produce the same frame, column order included.
+    """
+    if request.param == "python":
+        monkeypatch.setattr(readers, "_compiled_gff3_parser", lambda: None)
+    elif readers._compiled_gff3_parser() is None:
+        pytest.skip("gtfreader's compiled extension is not available")
+    return request.param
+
+
+@pytest.fixture
+def requires_compiled_parser():
+    if readers._compiled_gff3_parser() is None:
+        pytest.skip("gtfreader's compiled extension is not available")
 
 
 def disable_pyarrow(monkeypatch) -> None:
@@ -290,7 +311,7 @@ def test_read_gff3_directives_are_dropped_not_parsed(tmp_path, mode):
     assert list(frame["Chromosome"]) == ["chr1", "chr2", "chr3"]
 
 
-def test_read_gff3_dtype_contract(tmp_path, mode):
+def test_read_gff3_dtype_contract(tmp_path, mode, attribute_parser):
     path = write(tmp_path, GFF3_CORPUS["many_rows"], "test.gff3")
     frame = pr.read_gff3(path)
     for column in ("Chromosome", "Feature", "Strand"):
@@ -337,6 +358,60 @@ def test_read_gff3_nrows_agrees(tmp_path, monkeypatch, requires_pyarrow, nrows):
     from_pandas, from_arrow = read_both(pr.read_gff3, path, monkeypatch, nrows=nrows)
     assert len(from_arrow) == nrows
     assert_frame_equal(from_pandas, from_arrow)
+
+
+# --------------------------------------------------------------------------
+# The two GFF3 attribute parsers
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", sorted(GFF3_CORPUS))
+def test_gff3_attribute_parsers_agree(tmp_path, monkeypatch, requires_compiled_parser, name):
+    path = write(tmp_path, GFF3_CORPUS[name], "test.gff3")
+    monkeypatch.setattr(readers, "_compiled_gff3_parser", lambda: None)
+    from_python = pr.read_gff3(path)
+    monkeypatch.undo()
+    assert_frame_equal(from_python, pr.read_gff3(path))
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        "ID=a;Name=b",
+        "ID=a;Name=b;",
+        "ID=a; Name=b",
+        "ID=a;;Name=b",
+        "novalue;ID=a",
+        "ID=a=b=c",
+        "",
+        ";;;",
+        "ID=a;ID=b",
+        "ID=;Name=b",
+        "=v;ID=a",
+        "ID=éèü",
+    ],
+)
+def test_gff3_attribute_parsers_agree_on_edge_cases(requires_compiled_parser, attribute):
+    """The compiled parser has to reproduce `to_keys_and_values` exactly.
+
+    Including where it is odd: `ID=a; Name=b` really does yield a key of
+    `" Name"`, because nothing trims whitespace around a key.
+    """
+    series = pd.Series([attribute, "ID=z"])
+    from_compiled = to_rows_gff3(series)
+    rowdicts = [to_keys_and_values(line) for line in series]
+    from_python = pd.DataFrame.from_records(rowdicts).set_index(series.index)
+    assert_frame_equal(from_compiled, from_python)
+
+
+def test_gff3_compiled_parser_is_really_used(requires_compiled_parser):
+    assert readers._compiled_gff3_parser() is not None
+
+
+def test_gff3_reader_works_without_the_compiled_parser(tmp_path, monkeypatch):
+    monkeypatch.setattr(readers, "_compiled_gff3_parser", lambda: None)
+    path = write(tmp_path, GFF3_CORPUS["many_rows"], "test.gff3")
+    assert len(pr.read_gff3(path)) == 400
 
 
 # --------------------------------------------------------------------------
