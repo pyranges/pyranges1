@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import gtfreader
+import numpy as np
 import pandas as pd
 from natsort import natsorted  # type: ignore[import]
 
@@ -11,12 +12,17 @@ from pyranges1.core.pyranges_helpers import ensure_pyranges
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from types import ModuleType
+
+    import pyarrow as pa
 
     from pyranges1.core.pyranges_main import PyRanges
 
 logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
+
+_HASH = ord("#")
 
 
 def from_string(s: str) -> "PyRanges":
@@ -156,11 +162,188 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
     # Whichever reader ran, the dtype contract is the same. The pyarrow path
     # usually gets the dictionary for free by asking for it up front; this makes
     # the guarantee hold either way.
-    for column in ("Chromosome", "Strand"):
-        if column in df.columns and not isinstance(df[column].dtype, pd.CategoricalDtype):
-            df[column] = df[column].astype("category")
+    _as_sorted_categorical(df, ("Chromosome", "Strand"))
 
     return ensure_pyranges(df)
+
+
+def _pyarrow_csv() -> "tuple | None":
+    """Return `(pyarrow, pyarrow.csv)`, or None when pyarrow is not installed.
+
+    Every fast path in this module goes through here, so there is exactly one
+    place to disable, and the tests that run each reader both ways patch it.
+    """
+    try:
+        import pyarrow as pa
+        from pyarrow import csv as pacsv
+    except ImportError:
+        return None
+    return pa, pacsv
+
+
+def _as_sorted_categorical(df: pd.DataFrame, columns: "tuple[str, ...]") -> pd.DataFrame:
+    """Make `columns` categorical with pandas' lexicographically sorted order.
+
+    Category *order* is not cosmetic: pandas groups and sorts a categorical by
+    it, so `sort_values("Chromosome")` follows it. `astype` sorts, but pyarrow's
+    dictionary is in order of first appearance, so without this the row order of
+    a sort or a groupby would depend on whether pyarrow happened to be
+    installed.
+    """
+    for column in columns:
+        if column not in df.columns:
+            continue
+        values = df[column]
+        if isinstance(values.dtype, pd.CategoricalDtype):
+            categories = values.cat.categories
+            if not categories.is_monotonic_increasing:
+                df[column] = values.cat.reorder_categories(categories.sort_values())
+        else:
+            df[column] = values.astype("category")
+    return df
+
+
+def _skip_comment_rows(row) -> str:
+    """Skip a whole-line comment; refuse any other ragged row.
+
+    pandas drops `#` lines because of `comment="#"`; to pyarrow they are rows
+    with the wrong number of fields. A ragged row that is not a comment -- the
+    sequence lines of a `##FASTA` section, say -- is a file this path does not
+    model, so it errors out and the caller falls back to pandas.
+    """
+    return "skip" if row.text.lstrip().startswith("#") else "error"
+
+
+def _contains_hash(pa: "ModuleType", column: "pa.ChunkedArray") -> bool:
+    """Report whether the byte `#` occurs anywhere in a text column.
+
+    `comment="#"` truncates a line at a `#` in *any* position, not only at the
+    start, so a file with one inside a field is read differently by the two
+    parsers. Rather than model that, detect it and let pandas have the file.
+
+    Only the raw character buffer is needed, so this runs at memory speed --
+    about 0.03 s over a 764 MB column, against 0.7 s for
+    `pyarrow.compute.match_substring`.
+    """
+    for chunk in column.chunks:
+        # A dictionary column keeps its text in the (tiny) dictionary.
+        values = chunk.dictionary if pa.types.is_dictionary(chunk.type) else chunk
+        if not (pa.types.is_string(values.type) or pa.types.is_large_string(values.type)):
+            continue
+        data = values.buffers()[2]
+        if data is None:
+            continue
+        if (np.frombuffer(data, dtype=np.uint8) == _HASH).any():
+            return True
+    return False
+
+
+def _widen_empty_columns(pa: "ModuleType", table: "pa.Table") -> "pa.Table":
+    """Give a wholly-empty column the float64 pandas would have inferred.
+
+    An empty field is null on both sides, but a column that is *nothing but*
+    empty fields has no type to infer: pandas calls it float64 full of NaN,
+    pyarrow calls it `null`, and null converts to an object column of None.
+    """
+    fields = [field.with_type(pa.float64()) if pa.types.is_null(field.type) else field for field in table.schema]
+    if all(field.type == original.type for field, original in zip(fields, table.schema, strict=True)):
+        return table
+    return table.cast(pa.schema(fields))
+
+
+def _arrow_read_csv(
+    path: Path,
+    *,
+    column_names: list[str] | None,
+    dictionary_columns: "tuple[str, ...]" = (),
+    integer_columns: "tuple[str, ...]" = (),
+    skip_comment_lines: bool = False,
+) -> "pa.Table | None":
+    """Parse a tab-separated file with `pyarrow.csv`, or return None for pandas.
+
+    pandas' C parser is single-threaded, and on a large file it is most of the
+    cost of reading. `pyarrow.csv` parses on every core and hands back an Arrow
+    table; asking for the categorical columns as dictionaries up front means
+    they arrive without a second pass. Measured on a 12-core machine:
+
+        rows       file        pandas   pyarrow
+        10^7       hg38          1.27      0.12
+        10^8       hg38         12.93      1.19
+        10^8       proteome     51.49      3.16
+
+    Returns None whenever pandas should read the file instead. pandas is the
+    reference implementation, so anything this path does not model exactly is
+    handed back rather than approximated.
+    """
+    modules = _pyarrow_csv()
+    if modules is None:
+        return None
+    pa, pacsv = modules
+
+    dictionary = pa.dictionary(pa.int32(), pa.string())
+    column_types: dict[str, object] = dict.fromkeys(dictionary_columns, dictionary)
+    # Pinned rather than inferred: inference turns a coordinate too large for
+    # int64 into a float, quietly rounding it, where pandas keeps the integer.
+    # Pinned, pyarrow refuses the file and pandas gets it.
+    column_types.update({name: pa.int64() for name in integer_columns})
+
+    parse_options = pacsv.ParseOptions(
+        delimiter="\t",
+        **({"invalid_row_handler": _skip_comment_rows} if skip_comment_lines else {}),
+    )
+    read_options = (
+        pacsv.ReadOptions(column_names=column_names, use_threads=True)
+        if column_names is not None
+        # The file names its own columns; let pyarrow read them.
+        else pacsv.ReadOptions(use_threads=True)
+    )
+
+    try:
+        table = pacsv.read_csv(
+            path,
+            read_options=read_options,
+            parse_options=parse_options,
+            convert_options=pacsv.ConvertOptions(
+                column_types=column_types,
+                # pandas applies its NA list to text columns as well, so an
+                # empty field reads back as NaN rather than "". pyarrow only
+                # does that when asked, and its default null list is the same
+                # set of spellings.
+                strings_can_be_null=True,
+            ),
+        )
+    except (pa.ArrowInvalid, pa.ArrowNotImplementedError, UnicodeDecodeError, OSError):
+        # Ragged rows, an encoding pandas tolerates, an unreadable compression:
+        # all of these are pandas' problem to solve, not reasons to fail.
+        return None
+
+    if skip_comment_lines and any(_contains_hash(pa, table.column(name)) for name in table.column_names):
+        return None
+
+    # A file with no data lines is not worth modelling: pandas' empty frame
+    # carries the dtypes of the chunk it never filled, which the Arrow schema
+    # does not reproduce.
+    if table.num_rows == 0:
+        return None
+
+    return _widen_empty_columns(pa, table)
+
+
+def _arrow_to_pandas(table: "pa.Table") -> pd.DataFrame:
+    """Convert to pandas using pandas' own spelling of a missing value.
+
+    pyarrow puts `None` in an object column where pandas' reader puts `NaN`.
+    Under pandas 3 both are NA and the difference does not arise; under pandas 2
+    they are distinguishable, and pandas already warns that a future version
+    will stop treating them as equal.
+
+    `null_count` is Arrow metadata, so a column without nulls costs nothing.
+    """
+    df = table.to_pandas()
+    for name in df.columns:
+        if df[name].dtype == object and table.column(name).null_count:
+            df[name] = df[name].fillna(np.nan)
+    return df
 
 
 def _read_bed_pyarrow(
@@ -169,62 +352,15 @@ def _read_bed_pyarrow(
     names: list[str] | None,
     header: int | None,
 ) -> "pd.DataFrame | None":
-    """Read a BED file with `pyarrow.csv`, or return None to use pandas.
-
-    pandas' C parser is single-threaded, and on large BED files it is the whole
-    cost of reading. `pyarrow.csv` parses on every core and hands pandas an
-    Arrow table, and asking for the chromosome column as a dictionary up front
-    means the categorical comes back without a second pass. Measured on a
-    12-core machine:
-
-        rows       file        pandas   pyarrow
-        10^7       hg38          1.27      0.12
-        10^8       hg38         12.93      1.19
-        10^8       proteome     51.49      3.16
-
-    pyarrow is an optional dependency: when it is missing, or when the file is
-    shaped in a way this path does not cover, the caller falls back to pandas,
-    which remains the reference behaviour.
-    """
-    try:
-        import pyarrow as pa
-        from pyarrow import csv as pacsv
-    except ImportError:
-        return None
-
-    if header == 0:
-        # The file names its own columns; let pyarrow read them.
-        read_options = pacsv.ReadOptions(use_threads=True)
-        column_types: dict[str, object] = {}
-    else:
-        read_options = pacsv.ReadOptions(column_names=names, use_threads=True)
-        # Dictionary-encode the two columns that become categorical anyway, so
-        # the conversion is a no-op rather than a full pass over the column.
-        dictionary = pa.dictionary(pa.int32(), pa.string())
-        column_types = {"Chromosome": dictionary}
-        if names is not None and "Strand" in names:
-            column_types["Strand"] = dictionary
-
-    try:
-        table = pacsv.read_csv(
-            path,
-            read_options=read_options,
-            parse_options=pacsv.ParseOptions(delimiter="\t"),
-            convert_options=pacsv.ConvertOptions(
-                column_types=column_types,
-                # pandas applies its NA list to text columns as well, so an
-                # empty ninth BED field reads back as NaN rather than "".
-                # pyarrow only does that when asked, and its default null list
-                # is the same set of spellings.
-                strings_can_be_null=True,
-            ),
-        )
-    except (pa.ArrowInvalid, pa.ArrowNotImplementedError, OSError):
-        # Ragged rows, an encoding pandas tolerates, an unreadable compression:
-        # all of these are pandas' problem to solve, not reasons to fail.
-        return None
-
-    return table.to_pandas()
+    """Read a BED file with `pyarrow.csv`, or return None to use pandas."""
+    named = header != 0 and names is not None
+    table = _arrow_read_csv(
+        path,
+        column_names=names if header != 0 else None,
+        dictionary_columns=tuple(c for c in ("Chromosome", "Strand") if named and c in names),
+        integer_columns=tuple(c for c in ("Start", "End") if named and c in names),
+    )
+    return None if table is None else _arrow_to_pandas(table)
 
 
 def read_bam(
@@ -459,14 +595,20 @@ def to_rows_keep_duplicates(anno: pd.Series, *, ignore_bad: bool = False) -> pd.
 
 def to_rows_gff3(anno: pd.Series) -> pd.DataFrame:
     """Parse GFF3 attribute column into a dataframe of attribute columns."""
-    rowdicts = [to_keys_and_values(line) for line in list(anno)]
+    # A row with no attribute at all -- an empty ninth field, or the sequence
+    # lines of a `##FASTA` section, which arrive as ragged rows padded with NaN
+    # -- has nothing to expand. That is not a parse error.
+    rowdicts = [to_keys_and_values(line) for line in anno.where(anno.notna(), "")]
 
     return pd.DataFrame.from_records(rowdicts).set_index(anno.index)
 
 
 def to_keys_and_values(line: str) -> dict[str, str]:
     """Parse GFF3 attribute column."""
-    return dict(it.split("=") for it in line.rstrip("; ").split(";"))
+    # Split once: a value may contain `=`, and GFF3 in the wild does not always
+    # percent-encode it. Segments without one are not tag=value pairs and are
+    # skipped, which is also what makes an empty attribute an empty dict.
+    return dict(it.split("=", 1) for it in line.rstrip("; ").split(";") if "=" in it)
 
 
 def read_gff3(
@@ -493,6 +635,12 @@ def read_gff3(
     PyRanges (and also the DF returned by this function, if as_df=True), instead
     encodes intervals as 0-based, Start included and End excluded.
 
+    If `pyarrow` is installed, the nine fixed columns are parsed on every core
+    rather than one; the result is identical either way. Install it with
+    `pip install pyranges1[fast-io]`. Expanding the attribute column is the bulk
+    of the work and is unaffected, so the gain is around 1.3x, not the 10-18x
+    `read_bed` sees.
+
     See Also
     --------
     pyranges1.read_gtf : read files in the Gene Transfer Format
@@ -503,31 +651,76 @@ def read_gff3(
     dtypes: Mapping = {"Chromosome": "category", "Feature": "category", "Strand": "category"}
 
     names = ["Chromosome", "Source", "Feature", "Start", "End", "Score", "Strand", "Frame", "Attribute"]
+    chunksize = int(1e5)
 
-    df_iter = pd.read_csv(
-        path,
-        comment="#",
-        sep="\t",
-        header=None,
-        names=names,
-        dtype=dtypes,
-        chunksize=int(1e5),
-        nrows=nrows,
+    # `nrows` stays on the pandas path: pyarrow.csv has no row limit, so reading
+    # the whole file to throw most of it away would be slower, not faster.
+    table = (
+        None
+        if nrows is not None
+        else _arrow_read_csv(
+            path,
+            column_names=names,
+            dictionary_columns=tuple(dtypes),
+            integer_columns=("Start", "End"),
+            skip_comment_lines=True,
+        )
     )
 
-    dfs = []
-    for df in df_iter:
-        extra = to_rows_gff3(df.Attribute.astype(str))
-        _df = df.drop("Attribute", axis=1)
-        extra = extra.set_index(_df.index)
-        ndf = pd.concat([_df, extra], axis=1, sort=False)
-        dfs.append(ndf)
+    if table is not None:
+        dfs = _gff3_frames_from_arrow(table, chunksize)
+    else:
+        df_iter = pd.read_csv(
+            path,
+            comment="#",
+            sep="\t",
+            header=None,
+            names=names,
+            dtype=dtypes,
+            chunksize=chunksize,
+            nrows=nrows,
+        )
+
+        dfs = []
+        for df in df_iter:
+            extra = to_rows_gff3(df.Attribute.astype(str))
+            _df = df.drop("Attribute", axis=1)
+            extra = extra.set_index(_df.index)
+            ndf = pd.concat([_df, extra], axis=1, sort=False)
+            dfs.append(ndf)
 
     df = pd.concat(dfs, sort=False)
 
     df.loc[:, "Start"] = df.Start - 1
 
+    # One dtype whatever the file. Without this it is an accident of chunking:
+    # pd.concat demotes a categorical to object when the chunks carry different
+    # categories, so on a coordinate-sorted GFF3 Chromosome came back object
+    # while Feature came back category, and the answer depended on a chunk size
+    # that is a tuning knob rather than a contract.
+    _as_sorted_categorical(df, tuple(dtypes))
+
     return ensure_pyranges(df)
+
+
+def _gff3_frames_from_arrow(table: "pa.Table", chunksize: int) -> list[pd.DataFrame]:
+    """Expand attributes a chunk at a time, as the pandas path does.
+
+    Slicing the Arrow table rather than converting it whole keeps the raw
+    attribute strings of one chunk alive at a time.
+    """
+    dfs = []
+    for start in range(0, table.num_rows, chunksize):
+        df = _arrow_to_pandas(table.slice(start, chunksize))
+        # pandas numbers its chunks continuously across the file; a slice
+        # converted on its own would restart at zero and the concat would end up
+        # with a repeated index.
+        df.index = pd.RangeIndex(start, start + len(df))
+        extra = to_rows_gff3(df.Attribute.astype(str))
+        _df = df.drop("Attribute", axis=1)
+        extra = extra.set_index(_df.index)
+        dfs.append(pd.concat([_df, extra], axis=1, sort=False))
+    return dfs
 
 
 def read_bigwig(f: str | Path) -> "PyRanges":
