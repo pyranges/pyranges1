@@ -213,6 +213,7 @@ def _to_bigwig(
     *,
     divide: bool = False,
     rpm: bool = True,
+    precomputed: bool = False,
     return_data: bool = False,
 ) -> PyRanges | None:
     try:
@@ -225,7 +226,15 @@ def _to_bigwig(
 
         sys.exit(1)
 
-    if not divide:
+    if precomputed:
+        if value_col is None:
+            msg = "precomputed=True requires value_col."
+            raise ValueError(msg)
+        if divide:
+            msg = "divide=True is incompatible with precomputed=True."
+            raise ValueError(msg)
+        df = self.get_with_loc_columns(value_col).rename(columns={value_col: BIGWIG_SCORE_COL})
+    elif not divide:
         rles = self.to_rle(rpm=rpm, strand=False, value_col=value_col)
         df = rles.to_ranges()
     else:
@@ -236,11 +245,10 @@ def _to_bigwig(
             rle.values = np.log2(rle.values)
         df = _merged_runs(ratio).to_ranges()
     gr = ensure_pyranges(df)
-    unique_chromosomes = gr.chromosomes
-
     gr = gr.remove_strand()
     gr = gr.sort_ranges()
     gr = gr.get_with_loc_columns(BIGWIG_SCORE_COL)
+    unique_chromosomes = gr.chromosomes
 
     if return_data:
         return gr
@@ -254,10 +262,10 @@ def _to_bigwig(
     bw = pyBigWig.open(path, "w")
     bw.addHeader(header)
 
-    chromosomes = df[CHROM_COL].tolist()
-    starts = df[START_COL].tolist()
-    ends = df[END_COL].tolist()
-    values = df.Score.tolist()
+    chromosomes = gr[CHROM_COL].tolist()
+    starts = gr[START_COL].tolist()
+    ends = gr[END_COL].tolist()
+    values = gr[BIGWIG_SCORE_COL].tolist()
 
     bw.addEntries(chromosomes, starts, ends=ends, values=values)
 
