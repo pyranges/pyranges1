@@ -29,6 +29,7 @@ from pyranges1.core.names import (
     START_COL,
     STRAND_BEHAVIOR_OPPOSITE,
     STRAND_COL,
+    TEMP_INDEX_COL,
     TEMP_TRANSCRIPT_ID_COL,
     USE_STRAND_DEFAULT,
     VALID_BY_TYPES,
@@ -2371,8 +2372,8 @@ class PyRanges(RangeFrame):
           int64  |    category        int64    int64  category    str                 int64    int64  str              int64
         -------  ---  ------------  -------  -------  ----------  --------------  ---------  -------  ----------  ----------
               0  |    chr1                3        6  +           chr1                   20       22  +                   15
-              2  |    chr1                8        9  +           chr1                   20       22  +                   12
               1  |    chr1                5        7  -           chr1                    6        7  -                    0
+              2  |    chr1                8        9  +           chr1                   20       22  +                   12
         PyRanges with 3 rows, 9 columns, and 1 index columns.
         Contains 1 chromosomes and 2 strands.
 
@@ -2432,7 +2433,18 @@ class PyRanges(RangeFrame):
         # Unpacked rather than zipped against VALID_GENOMIC_STRAND_INFO: pairing the
         # halves with their strand by position would silently mismap if either the
         # constant or split_on_strand's return order changed.
-        forward_self, reverse_self = split_on_strand(self)
+        # Each strand is searched and ordered on its own, so the plain concat below
+        # groups the result by strand (every forward row, then every reverse row) and
+        # drops the interleaving between strands; preserve_input_order would otherwise
+        # have no effect in this branch (issue #169). Carry each row's position in self
+        # through the split so the halves can be merged back into input order, matching
+        # the direction="any" branch. The index cannot stand in for the position, since
+        # k > 1 duplicates it and the caller's index may be non-unique.
+        ordered_self = self
+        if preserve_input_order:
+            ordered_self = self.copy()
+            ordered_self[TEMP_INDEX_COL] = np.arange(len(self))
+        forward_self, reverse_self = split_on_strand(ordered_self)
         per_strand = [
             RangeFrame(strand_self).nearest_ranges(
                 other=_other,
@@ -2451,7 +2463,11 @@ class PyRanges(RangeFrame):
             )
         ]
 
-        return ensure_pyranges(pd.concat(per_strand))
+        combined = pd.concat(per_strand)
+        if preserve_input_order:
+            combined = combined.sort_values(TEMP_INDEX_COL, kind="stable")
+            del combined[TEMP_INDEX_COL]
+        return ensure_pyranges(combined)
 
     def overlap(  # type: ignore[override]
         self,

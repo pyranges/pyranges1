@@ -196,6 +196,62 @@ def test_ties_first_applies_per_strand_for_a_directional_query() -> None:
     assert dict(zip(upstream["Strand"], upstream["Start_b"], strict=True)) == {"+": 50, "-": 200}
 
 
+def test_directional_nearest_preserves_input_order_across_strands() -> None:
+    """preserve_input_order must interleave the strand halves back into input order.
+
+    A directional query (upstream/downstream) splits self by strand, searches each
+    half on its own, and concatenates the results. That concat groups the rows by
+    strand -- every + row, then every - row -- so on an interleaved-strand frame the
+    output no longer matches the input and preserve_input_order had no effect at all
+    (issue #169). direction="any" never splits and always honoured the option, so it
+    is the oracle here.
+    """
+    query = pr.PyRanges(
+        {
+            "Chromosome": ["chr1"] * 4,
+            "Start": [100, 300, 500, 700],
+            "End": [120, 320, 520, 720],
+            "Strand": ["+", "-", "+", "-"],
+            "Id": ["a", "b", "c", "d"],
+        }
+    )
+    other = pr.PyRanges(
+        {
+            "Chromosome": ["chr1", "chr1"],
+            "Start": [0, 900],
+            "End": [10, 910],
+            "Strand": ["+", "+"],
+        }
+    )
+
+    # direction="any" is unaffected: it returns rows in input order (the oracle).
+    for preserve in (True, False):
+        result = query.nearest_ranges(
+            other, direction="any", strand_behavior="ignore", preserve_input_order=preserve
+        )
+        assert result["Id"].tolist() == ["a", "b", "c", "d"]
+        assert list(result.index) == [0, 1, 2, 3]
+
+    # Directional queries must honour it too: input order, original index.
+    for direction in ("upstream", "downstream"):
+        result = query.nearest_ranges(
+            other, direction=direction, strand_behavior="ignore", preserve_input_order=True
+        )
+        assert result["Id"].tolist() == ["a", "b", "c", "d"]
+        assert list(result.index) == [0, 1, 2, 3]
+
+    # preserve_input_order=False is unchanged: rows stay grouped by strand, every
+    # forward row before every reverse row, never the interleaved input order.
+    for direction in ("upstream", "downstream"):
+        grouped = query.nearest_ranges(
+            other, direction=direction, strand_behavior="ignore", preserve_input_order=False
+        )
+        ids = grouped["Id"].tolist()
+        assert set(ids) == {"a", "b", "c", "d"}
+        assert set(ids[:2]) == {"a", "c"}
+        assert set(ids[2:]) == {"b", "d"}
+
+
 def test_nearest_ranges_rejects_an_unknown_ties() -> None:
     """An unknown value must raise, not reach the kernel: a Rust panic is not
     an Exception, so `except Exception` cannot catch it."""
