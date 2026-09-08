@@ -61,8 +61,24 @@ class RangeFrame(pd.DataFrame):
     A table with Start and End columns. Parent class of PyRanges. Subclass of pandas DataFrame.
     """
 
+    # a frame without these is not a RangeFrame, so pandas rebuilds it as a plain DataFrame.
+    # PyRanges requires Chromosome as well.
+    _required_columns: frozenset[str] = frozenset(RANGE_COLS)
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+
+    def _constructor_from_mgr(self, mgr, axes) -> "RangeFrame | pd.DataFrame":
+        """Build a frame from a block manager, which is how pandas rebuilds one internally.
+
+        pandas' own version routes a rebuild through RangeFrame(DataFrame(...)), building and
+        validating two more frames on the way; from the manager we can do neither.
+        """
+        # _from_mgr is pandas' own way of doing this (see DataFrame._constructor_from_mgr);
+        # pandas-stubs does not declare it, hence the ignores.
+        if not self._required_columns.issubset(axes[0]):
+            return pd.DataFrame._from_mgr(mgr, axes=axes)  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
+        return type(self)._from_mgr(mgr, axes=axes)  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
 
     def __str__(
         self,
@@ -856,7 +872,8 @@ class RangeFrame(pd.DataFrame):
         return self
 
     def copy(self, *args, **kwargs) -> "RangeFrame":  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D102
-        return _mypy_ensure_rangeframe(super().copy(*args, **kwargs))
+        # a copy keeps every column, so pandas hands this straight back as our own class
+        return self._rebuild_as_self(super().copy(*args, **kwargs))
 
     @classmethod
     def _constructor_with_fallback(cls, *args, **kwargs) -> "RangeFrame | pd.DataFrame":
@@ -870,15 +887,26 @@ class RangeFrame(pd.DataFrame):
         """
         return cls(*args, **kwargs)
 
+    def _rebuild_as_self(self, result: Any) -> Any:
+        """Return result as our own class, building it only if pandas did not already."""
+        # _constructor_from_mgr already hands back our class, or a DataFrame when the frame
+        # lost a column we require; rebuilding either one costs two more frames and buys
+        # nothing.
+        if result is None or type(result) is type(self):
+            return result
+        if not self._required_columns.issubset(result.columns):
+            return result
+        return self._constructor_with_fallback(result)
+
     def drop(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame | None":  # type: ignore[override]  # noqa: D102
-        return self._constructor_with_fallback(super().drop(*args, **kwargs))
+        return self._rebuild_as_self(super().drop(*args, **kwargs))
 
     def drop_and_return(self, *args: Any, **kwargs: Any) -> "RangeFrame | pd.DataFrame":  # noqa: D102
         kwargs["inplace"] = False
-        return self._constructor_with_fallback(super().drop(*args, **kwargs))
+        return self._rebuild_as_self(super().drop(*args, **kwargs))
 
     def reindex(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame":  # noqa: D102
-        return self._constructor_with_fallback(super().reindex(*args, **kwargs))
+        return self._rebuild_as_self(super().reindex(*args, **kwargs))
 
 
 def _mypy_ensure_rangeframe(r: pd.DataFrame) -> "RangeFrame":

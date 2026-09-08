@@ -168,6 +168,14 @@ class PyRanges(RangeFrame):
 
     """
 
+    # a frame that loses one of these is no longer a PyRanges: RangeFrame._constructor_from_mgr
+    # rebuilds it as a plain DataFrame.
+    _required_columns: frozenset[str] = frozenset(GENOME_LOC_COLS)
+
+    # built on first use by the loci property: pandas builds frames from a manager without
+    # ever calling __init__, so this cannot be set there alone.
+    _loci: "LociGetter | None" = None
+
     def __new__(cls, *args, **kwargs) -> "pr.PyRanges":  # type: ignore[misc]
         """Create a new instance of a PyRanges object."""
         # __new__ is a special static method used for creating and
@@ -184,10 +192,18 @@ class PyRanges(RangeFrame):
         if not args and "data" not in kwargs:
             return super().__new__(cls)
 
-        df = pd.DataFrame(kwargs.get("data") if "data" in kwargs else args[0])
-        missing_any_required_columns = not set(GENOME_LOC_COLS).issubset({*df.columns})
+        # pandas hands us a whole DataFrame every time it rebuilds a frame internally, so read
+        # the columns off it rather than building a second frame just to look at them; a call
+        # that names the columns on the way in still has to be built before they can be read.
+        data = kwargs["data"] if "data" in kwargs else args[0]
+        if isinstance(data, pd.DataFrame) and "columns" not in kwargs:
+            columns = data.columns
+        else:
+            columns = pd.DataFrame(*args, **kwargs).columns
+
+        missing_any_required_columns = not set(GENOME_LOC_COLS).issubset({*columns})
         if missing_any_required_columns:
-            missing = sorted(set(GENOME_LOC_COLS) - set(df.columns))
+            missing = sorted(set(GENOME_LOC_COLS) - set(columns))
             msg = f"Cannot construct PyRanges: missing required column(s) {missing}."
             raise ValueError(msg)
 
@@ -203,8 +219,6 @@ class PyRanges(RangeFrame):
             kwargs["data"] = {k: [] for k in cols_to_use}
 
         super().__init__(*args, **kwargs)
-
-        self._loci = LociGetter(self)
 
     @property
     def _constructor(self) -> Callable[..., "pr.PyRanges | pd.DataFrame"]:
@@ -427,6 +441,8 @@ class PyRanges(RangeFrame):
         TypeError: The loci accessor does not accept a list. If you meant to retrieve columns, use get_with_loc_columns instead.
 
         """
+        if self._loci is None:
+            self._loci = LociGetter(self)
         return self._loci
 
     def _chrom_and_strand_info(self) -> str:
@@ -774,7 +790,8 @@ class PyRanges(RangeFrame):
 
     def copy(self, *args, **kwargs) -> "pr.PyRanges":
         """Return a copy of the PyRanges."""
-        return ensure_pyranges(super().copy(*args, **kwargs))
+        # a copy keeps every column, so pandas hands this straight back as our own class
+        return self._rebuild_as_self(super().copy(*args, **kwargs))
 
     def _count_overlaps(
         self,
