@@ -2,7 +2,7 @@ import logging
 import sys
 import warnings
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import pandas as pd
@@ -126,7 +126,8 @@ def calculate_frame(p: "pr.PyRanges", group_by: str | list[str], frame_col: str 
 
     gr[frame_col] = sorted_p[FRAME_COL]
 
-    return gr.drop_and_return(TEMP_INDEX_COL, axis=1)
+    # TEMP_INDEX_COL isn't a required column, so this drop can never fall back to a DataFrame.
+    return cast("pr.PyRanges", gr.drop_and_return(TEMP_INDEX_COL, axis=1))
 
 
 def extend_orfs(  # noqa: C901,PLR0912,PLR0915
@@ -410,7 +411,8 @@ def extend_orfs(  # noqa: C901,PLR0912,PLR0915
             stacklevel=2,
         )
 
-    p = p.drop_and_return(["__length"], axis=1)
+    # "__length" isn't a required column, so this drop can never fall back to a DataFrame.
+    p = cast("pr.PyRanges", p.drop_and_return(["__length"], axis=1))
     ##################
 
     # Load Sequence Data from a Fasta file
