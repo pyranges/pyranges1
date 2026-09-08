@@ -4103,6 +4103,7 @@ class PyRanges(RangeFrame):
         *,
         divide: bool = False,
         rpm: bool = True,
+        precomputed: bool = False,
         return_data=False,
     ) -> "PyRanges | None":
         """Compute coverage (interval-based, or using a numerical value column) and write to bigwig.
@@ -4111,6 +4112,9 @@ class PyRanges(RangeFrame):
         If value_col is provided, the score is the sum of values of all intervals spanning that position.
         The score per position is then reduced to a minimal number of ranges with constant coverage
         (i.e. like a run-length encoding), and written in bigwig format to the provided path.
+
+        With ``precomputed=True``, skip coverage computation and write each input range with its value
+        from ``value_col``; with this option, input ranges must be non-overlapping.
 
         Note
         ----
@@ -4130,13 +4134,21 @@ class PyRanges(RangeFrame):
         value_col : str, default None
             Name of column to compute coverage of.
             If None, compute coverage (i.e. number of intervals spanning each position).
-
-        rpm : True
-            Whether to normalize data by dividing by total number of intervals and multiplying by
-            1e6.
+            Required when ``precomputed=True``; in that mode, its values are written directly.
 
         divide : bool, default False
-            (Only useful with value_col) Divide value coverage by regular coverage and take log2.
+            (Only useful with value_col) Divide value coverage by regular coverage and take log2. Incompatible
+            with ``precomputed=True``.
+
+        rpm : bool, default True
+            Whether to normalize data by dividing by total number of intervals and multiplying by 1e6. Ignored
+            when ``precomputed=True``.
+
+        precomputed : bool, default False
+            Write the ranges and ``value_col`` values directly, without
+            computing coverage. ``rpm`` is ignored in this mode. The ranges must be non-overlapping
+            (ignoring strand). To check, use:
+            ``assert len(gr.max_disjoint_overlaps(use_strand=False)) == len(gr)``
 
         return_data : bool, default False
             Whether to return the data that would be written to bigwig as a PyRanges.
@@ -4200,6 +4212,12 @@ class PyRanges(RangeFrame):
         PyRanges with 6 rows, 4 columns, and 1 index columns.
         Contains 1 chromosomes.
 
+        Write already-computed, non-overlapping values directly:
+
+        >>> signal = pr.PyRanges({"Chromosome": ["chr1", "chr1"],
+        ...                       "Start": [1, 6], "End": [4, 9], "Value": [0.5, 1.5]})
+        >>> signal.to_bigwig("signal.bw", {"chr1": 10}, value_col="Value", precomputed=True)  # doctest: +SKIP
+
         """
         from pyranges1.core.out import _to_bigwig
 
@@ -4212,6 +4230,7 @@ class PyRanges(RangeFrame):
             rpm=rpm,
             divide=divide,
             value_col=value_col,
+            precomputed=precomputed,
             return_data=return_data,
         )
 
