@@ -1,7 +1,7 @@
 import inspect
 import warnings
 from collections.abc import Callable, Iterable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import numpy as np
 import pandas as pd
@@ -220,7 +220,9 @@ class RangeFrame(pd.DataFrame):
 
         cols_to_drop = list({start, end, start2, end2}.difference(RANGE_COLS) if drop_old_columns else {})
 
-        return z.drop_and_return(labels=cols_to_drop, axis="columns")
+        # cols_to_drop excludes RANGE_COLS (Start/End), so this drop can never remove a
+        # required column and fall back to a plain DataFrame.
+        return cast("RangeFrame", z.drop_and_return(labels=cols_to_drop, axis="columns"))
 
     def cluster_overlaps(
         self,
@@ -856,15 +858,27 @@ class RangeFrame(pd.DataFrame):
     def copy(self, *args, **kwargs) -> "RangeFrame":  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D102
         return _mypy_ensure_rangeframe(super().copy(*args, **kwargs))
 
-    def drop(self, *args, **kwargs) -> "RangeFrame | None":  # type: ignore[override]  # noqa: D102
-        return self.__class__(super().drop(*args, **kwargs))
+    @classmethod
+    def _constructor_with_fallback(cls, *args, **kwargs) -> "RangeFrame | pd.DataFrame":
+        """Build a cls, falling back to a plain DataFrame if cls cannot represent the data.
 
-    def drop_and_return[T: "RangeFrame"](self: T, *args: Any, **kwargs: Any) -> T:  # noqa: PYI019, D102
+        A RangeFrame has no required columns, so it never falls back; PyRanges overrides
+        this to degrade to a DataFrame when a required column is missing.
+
+        This is not pandas' _constructor property: that one is called by pandas whenever it
+        rebuilds a frame internally, while this one is only called by the methods below.
+        """
+        return cls(*args, **kwargs)
+
+    def drop(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame | None":  # type: ignore[override]  # noqa: D102
+        return self._constructor_with_fallback(super().drop(*args, **kwargs))
+
+    def drop_and_return(self, *args: Any, **kwargs: Any) -> "RangeFrame | pd.DataFrame":  # noqa: D102
         kwargs["inplace"] = False
-        return self.__class__(super().drop(*args, **kwargs))
+        return self._constructor_with_fallback(super().drop(*args, **kwargs))
 
-    def reindex(self, *args, **kwargs) -> "RangeFrame":  # noqa: D102
-        return self.__class__(super().reindex(*args, **kwargs))
+    def reindex(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame":  # noqa: D102
+        return self._constructor_with_fallback(super().reindex(*args, **kwargs))
 
 
 def _mypy_ensure_rangeframe(r: pd.DataFrame) -> "RangeFrame":
