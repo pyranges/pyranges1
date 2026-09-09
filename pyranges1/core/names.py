@@ -27,11 +27,16 @@ def return_pyranges_if_possible(
 
 
 # Define the Literal type
-VALID_OVERLAP_TYPE = Literal["first", "all", "last", "contained"]
+VALID_OVERLAP_TYPE = Literal["first", "all", "last"]
 
 # Extract the options from the Literal type
 VALID_OVERLAP_OPTIONS = list(get_args(VALID_OVERLAP_TYPE))
-OVERLAP_FIRST, OVERLAP_ALL, OVERLAP_LAST, OVERLAP_CONTAINED = VALID_OVERLAP_OPTIONS
+OVERLAP_FIRST, OVERLAP_ALL, OVERLAP_LAST = VALID_OVERLAP_OPTIONS
+
+# Removed in 1.3.12: 'contained' was declared here but rejected by ruranges, and it only
+# ever duplicated contained_intervals_only=True. Kept as a name so the migration error
+# below can point at the argument that replaces it.
+REMOVED_OVERLAP_CONTAINED = "contained"
 
 BY_ENTRY_IN_KWARGS = "__by__"
 
@@ -87,21 +92,37 @@ VALID_JOIN_OPTIONS = [JOIN_INNER, JOIN_LEFT, JOIN_OUTER, JOIN_RIGHT]
 JOIN_SUFFIX = "_b"
 VALID_COMBINE_OPTIONS = Literal["intersect", "union", "swap"]
 
+# Two direction vocabularies, deliberately kept apart. The genomic one is
+# strand-aware: on the reverse strand "upstream" is the higher coordinate. The
+# coordinate one knows nothing of strand: "forward" is always the higher
+# coordinate. Sharing one word between them would let a coordinate-space intent
+# pass silently where a biological one was meant.
 NEAREST_ANY_DIRECTION: Final = "any"
 NEAREST_UPSTREAM: Final = "upstream"
 NEAREST_DOWNSTREAM: Final = "downstream"
-VALID_NEAREST_TYPE = Literal["any", "upstream", "downstream"]
-VALID_NEAREST_OPTIONS = [
+VALID_GENOMIC_DIRECTION_TYPE = Literal["any", "upstream", "downstream"]
+VALID_GENOMIC_DIRECTION_OPTIONS = [
     NEAREST_ANY_DIRECTION,
     NEAREST_UPSTREAM,
-    NEAREST_UPSTREAM,
-    None,
+    NEAREST_DOWNSTREAM,
 ]
 
-VALID_DIRECTION_TYPE = Literal["any", "forward", "backward"]
-ANY_DIRECTION = Literal["any"]
-FORWARD_DIRECTION = Literal["forward"]
-BACKWARD_DIRECTION = Literal["backward"]
+FORWARD_DIRECTION: Final = "forward"
+BACKWARD_DIRECTION: Final = "backward"
+VALID_COORDINATE_DIRECTION_TYPE = Literal["any", "forward", "backward"]
+VALID_COORDINATE_DIRECTION_OPTIONS = [
+    NEAREST_ANY_DIRECTION,
+    FORWARD_DIRECTION,
+    BACKWARD_DIRECTION,
+]
+
+# How many of the intervals sharing a reported distance come back. Every
+# interval a query overlaps is at distance 0, so this decides whether a query
+# in a dense region reports one row or one per overlap.
+TIES_ALL: Final = "all"
+TIES_FIRST: Final = "first"
+VALID_TIES_TYPE = Literal["all", "first"]
+VALID_TIES_OPTIONS = [TIES_ALL, TIES_FIRST]
 
 TEMP_INDEX_COL = "__temp_index__"
 TEMP_TYPE_COL = "__temp_type__"

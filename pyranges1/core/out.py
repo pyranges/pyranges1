@@ -1,7 +1,7 @@
 import csv
 import logging
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import numpy as np
 import pandas as pd
@@ -11,6 +11,9 @@ from pandas.core.frame import DataFrame
 from pyranges1.core.names import BIGWIG_SCORE_COL, CHROM_COL, END_COL, PANDAS_COMPRESSION_TYPE, START_COL
 from pyranges1.core.pyranges_helpers import ensure_pyranges
 from pyranges1.core.pyranges_main import PyRanges
+
+if TYPE_CHECKING:
+    from pyrle import RleDict  # type: ignore[import]
 
 GTF_COLUMNS_TO_PYRANGES = {
     "seqname": "Chromosome",
@@ -85,11 +88,21 @@ def _bed(df: DataFrame, *, keep: bool) -> DataFrame:
     return outdf
 
 
+def _resolve_compression(compression: PANDAS_COMPRESSION_TYPE) -> PANDAS_COMPRESSION_TYPE:
+    """Resolve the ``compression`` argument of the interval writers.
+
+    pandas reads ``None`` as *no compression, even for a .gz path*. The interval
+    writers infer from the path suffix instead, so ``to_bed("x.bed.gz")`` writes
+    gzip. Every other value is passed to pandas untouched.
+    """
+    return "infer" if compression is None else compression
+
+
 def _to_gff_like(
     gr: PyRanges,
     out_format: Literal["gtf", "gff3"],
     path: Path | None = None,
-    compression: PANDAS_COMPRESSION_TYPE = None,
+    compression: PANDAS_COMPRESSION_TYPE = "infer",
     map_cols: dict | None = None,
 ) -> str | None:
     df = _pyranges_to_gtf_like(
@@ -101,7 +114,7 @@ def _to_gff_like(
         path,
         index=False,
         header=False,
-        compression=compression,
+        compression=_resolve_compression(compression),
         mode="w",
         sep="\t",
         quoting=csv.QUOTE_NONE,
@@ -144,7 +157,7 @@ def _to_csv(
 def _to_bed(
     self: PyRanges,
     path: str | None = None,
-    compression: PANDAS_COMPRESSION_TYPE = None,
+    compression: PANDAS_COMPRESSION_TYPE = "infer",
     *,
     keep: bool = True,
 ) -> str | None:
@@ -154,11 +167,42 @@ def _to_bed(
         path,
         index=False,
         header=False,
-        compression=compression,
+        compression=_resolve_compression(compression),
         mode="w+",
         sep="\t",
         quoting=csv.QUOTE_NONE,
     )
+
+
+def _merged_runs(rles: "RleDict") -> "RleDict":
+    """Merge consecutive runs holding the same value, in every track.
+
+    This is what ``pyrle``'s ``defragment`` is for, but that implementation
+    zeroes the value whenever the merged result collapses to a single run --
+    ``Rle([5], [3.0]).defragment()`` yields a value of ``0.0``. Since
+    ``to_ranges`` then discards zero-valued runs as uncovered, relying on it
+    silently deletes any track that reduces to one run.
+
+    ``NaN`` is treated as equal to ``NaN`` so that adjacent undefined runs
+    merge, matching ``defragment``'s behaviour on inputs where it is correct.
+    """
+    from pyrle import Rle, RleDict
+
+    merged = {}
+    for chromosome, rle in rles.items():
+        runs = np.asarray(rle.runs)
+        values = np.asarray(rle.values, dtype=float)
+        if values.size <= 1:
+            merged[chromosome] = Rle(runs.copy(), values.copy())
+            continue
+        previous, current = values[:-1], values[1:]
+        same = (current == previous) | (np.isnan(current) & np.isnan(previous))
+        starts = np.concatenate(([0], np.flatnonzero(~same) + 1))
+        merged_values = values[starts]
+        # `defragment` normalises negative zero; keep that.
+        merged_values[merged_values == 0] = 0.0
+        merged[chromosome] = Rle(np.add.reduceat(runs, starts), merged_values)
+    return RleDict(merged)
 
 
 def _to_bigwig(
@@ -185,16 +229,12 @@ def _to_bigwig(
         rles = self.to_rle(rpm=rpm, strand=False, value_col=value_col)
         df = rles.to_ranges()
     else:
-        df = self.to_rle(rpm=rpm, strand=False, value_col=value_col)
-        divide_by = self.to_rle(rpm=rpm, strand=False)
-        c = df / divide_by
-        new_pyrles = {}
-        for k, v in c.items():
-            v.values = np.log2(v.values)
-            v.defragment()
-            new_pyrles[k] = v
-
-        df = c.defragment().to_ranges()
+        numerator = self.to_rle(rpm=rpm, strand=False, value_col=value_col)
+        denominator = self.to_rle(rpm=rpm, strand=False)
+        ratio = numerator / denominator
+        for rle in ratio.values():
+            rle.values = np.log2(rle.values)
+        df = _merged_runs(ratio).to_ranges()
     gr = ensure_pyranges(df)
     unique_chromosomes = gr.chromosomes
 

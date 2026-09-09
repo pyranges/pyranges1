@@ -24,6 +24,7 @@ from pyranges1.core.names import (
     NEAREST_DOWNSTREAM,
     NEAREST_UPSTREAM,
     PANDAS_COMPRESSION_TYPE,
+    RANGE_COLS,
     REVERSE_STRAND,
     START_COL,
     STRAND_BEHAVIOR_OPPOSITE,
@@ -32,11 +33,14 @@ from pyranges1.core.names import (
     USE_STRAND_DEFAULT,
     VALID_BY_TYPES,
     VALID_COMBINE_OPTIONS,
+    VALID_COORDINATE_DIRECTION_TYPE,
+    VALID_GENOMIC_DIRECTION_OPTIONS,
+    VALID_GENOMIC_DIRECTION_TYPE,
     VALID_GENOMIC_STRAND_INFO,
     VALID_JOIN_TYPE,
-    VALID_NEAREST_TYPE,
     VALID_OVERLAP_TYPE,
     VALID_STRAND_BEHAVIOR_TYPE,
+    VALID_TIES_TYPE,
     VALID_USE_STRAND_TYPE,
     CombineIntervalColumnsOperation,
 )
@@ -58,7 +62,7 @@ from pyranges1.methods.complement import _complement
 from pyranges1.methods.interval_metrics import compute_interval_metrics
 from pyranges1.methods.map_to_global import _map_to_global_pandas
 from pyranges1.methods.map_to_local import _map_to_local
-from pyranges1.methods.sort import sort_factorize_dict
+from pyranges1.methods.sort import resolve_sort_keys, sort_order
 from pyranges1.range_frame.range_frame import RangeFrame
 from pyranges1.range_frame.range_frame_validator import InvalidRangesReason
 
@@ -1182,9 +1186,9 @@ class PyRanges(RangeFrame):
 
         multiple : {"all", "first", "last"}, default "all"
             What intervals to report when multiple intervals in 'other' overlap with the same interval in self.
-            The default "all" reports all overlapping subintervals, which will have duplicate indices.
-            "first" reports only, for each interval in self, the overlapping subinterval with smallest Start in 'other'
-            "last" reports only the overlapping subinterval with the biggest End in 'other'
+            The default "all" reports one row per overlapping pair, which will have duplicate indices.
+            "first" attaches, for each interval in self, only the overlapping interval of 'other' with the
+            smallest Start; "last" attaches only the one with the biggest End.
 
         contained_intervals_only : bool, default False
             Whether to report only intervals that are entirely contained in an interval of 'other'.
@@ -2147,13 +2151,14 @@ class PyRanges(RangeFrame):
         self,
         other: "PyRanges",
         strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto",
-        direction: VALID_NEAREST_TYPE = "any",
+        direction: VALID_GENOMIC_DIRECTION_TYPE = "any",
         *,
         k: int = 1,
         match_by: VALID_BY_TYPES = None,
         suffix: str = JOIN_SUFFIX,
         exclude_overlaps: bool = False,
         dist_col: str | None = "Distance",
+        ties: VALID_TIES_TYPE = "all",
         preserve_input_order: bool = True,
     ) -> "PyRanges":
         """Find closest interval.
@@ -2187,6 +2192,16 @@ class PyRanges(RangeFrame):
 
         dist_col : str or None
             Optional column to store the distance in.
+
+        ties : {"all", "first"}, default "all"
+            What to report when several intervals of `other` sit at the same distance.
+            "all" reports every one of them, "first" reports one per distance, so at
+            most `k` rows per interval of self. Which one is not specified, only that
+            the same input gives the same answer.
+
+            Overlapping intervals are all at distance 0, so unless `exclude_overlaps`
+            is set this decides whether an interval of self covered by many intervals
+            of other comes back once or once per overlap.
 
         preserve_input_order : bool, default True
             Whether to preserve the original input order in the result.
@@ -2285,6 +2300,19 @@ class PyRanges(RangeFrame):
         PyRanges with 3 rows, 7 columns, and 1 index columns (with 1 index duplicates).
         Contains 1 chromosomes.
 
+        Both intervals of right end at 6, so both are the same distance from chr1:10-14
+        and both are reported. ties="first" reports one of them, leaving one row per
+        interval of self:
+
+        >>> left.nearest_ranges(right, strand_behavior="ignore", dist_col=None, ties="first")
+          index  |    Chromosome      Start      End  Chromosome_b      Start_b    End_b  Hit_b
+          int64  |    str             int64    int64  str                 int64    int64  str
+        -------  ---  ------------  -------  -------  --------------  ---------  -------  -------
+              0  |    chr1               10       14  chr1                    1        6  second
+              1  |    chr1                1        2  chr1                    1        6  second
+        PyRanges with 2 rows, 7 columns, and 1 index columns.
+        Contains 1 chromosomes.
+
         >>> f1.nearest_ranges(f2, strand_behavior='ignore', exclude_overlaps=True)
           index  |    Chromosome      Start      End  Strand      Chromosome_b      Start_b    End_b  Strand_b      Distance
           int64  |    category        int64    int64  category    str                 int64    int64  str              int64
@@ -2336,62 +2364,59 @@ class PyRanges(RangeFrame):
                 k=k,
                 dist_col=dist_col,
                 direction="any",
+                ties=ties,
                 preserve_input_order=preserve_input_order,
             )
             return ensure_pyranges(res)
 
-        fwd_self, rev_self = split_on_strand(self)
-        if direction == NEAREST_DOWNSTREAM:
-            res = RangeFrame(fwd_self).nearest_ranges(
-                other=_other,
-                match_by=by,
-                suffix=suffix,
-                exclude_overlaps=exclude_overlaps,
-                k=k,
-                dist_col=dist_col,
-                direction="forward",
-                preserve_input_order=preserve_input_order,
-            )
-            res2 = RangeFrame(rev_self).nearest_ranges(
-                other=_other,
-                match_by=by,
-                suffix=suffix,
-                exclude_overlaps=exclude_overlaps,
-                k=k,
-                dist_col=dist_col,
-                direction="forward",
-                preserve_input_order=preserve_input_order,
-            )
-        elif direction == NEAREST_UPSTREAM:
-            res = RangeFrame(fwd_self).nearest_ranges(
-                other=RangeFrame(_other),
-                match_by=by,
-                suffix=suffix,
-                exclude_overlaps=exclude_overlaps,
-                k=k,
-                dist_col=dist_col,
-                direction="backward",
-                preserve_input_order=preserve_input_order,
-            )
-            res2 = RangeFrame(rev_self).nearest_ranges(
-                other=RangeFrame(_other),
-                match_by=by,
-                suffix=suffix,
-                exclude_overlaps=exclude_overlaps,
-                k=k,
-                dist_col=dist_col,
-                direction="backward",
-                preserve_input_order=preserve_input_order,
-            )
-        else:
-            msg = f"Invalid direction: {direction}"
+        if direction not in (NEAREST_UPSTREAM, NEAREST_DOWNSTREAM):
+            msg = f"direction must be one of {VALID_GENOMIC_DIRECTION_OPTIONS}; got {direction!r}"
             raise ValueError(msg)
 
-        return ensure_pyranges(
-            pd.concat(
-                [res, res2],
+        if not self.strand_valid:
+            # split_on_strand would otherwise fail deep inside a pandas query with
+            # "name 'Strand' is not defined", which says nothing about the cause.
+            msg = (
+                f"direction={direction!r} is strand-aware and needs valid strand information: "
+                "upstream is the higher coordinate on the reverse strand and the lower one on "
+                "the forward strand. Use direction='any', or see .strand_valid."
             )
-        )
+            raise ValueError(msg)
+
+        # RangeFrame.nearest_ranges searches in pure coordinate space, where "forward"
+        # means higher coordinates. Genomic downstream follows increasing coordinates on
+        # the forward strand but decreasing coordinates on the reverse strand (and upstream
+        # is the mirror image), so each strand resolves its own coordinate direction. This
+        # table is the single source of the strand-to-coordinate-direction mapping.
+        coordinate_direction: dict[tuple[str, str], VALID_COORDINATE_DIRECTION_TYPE] = {
+            (NEAREST_DOWNSTREAM, FORWARD_STRAND): "forward",
+            (NEAREST_DOWNSTREAM, REVERSE_STRAND): "backward",
+            (NEAREST_UPSTREAM, FORWARD_STRAND): "backward",
+            (NEAREST_UPSTREAM, REVERSE_STRAND): "forward",
+        }
+        # Unpacked rather than zipped against VALID_GENOMIC_STRAND_INFO: pairing the
+        # halves with their strand by position would silently mismap if either the
+        # constant or split_on_strand's return order changed.
+        forward_self, reverse_self = split_on_strand(self)
+        per_strand = [
+            RangeFrame(strand_self).nearest_ranges(
+                other=_other,
+                match_by=by,
+                suffix=suffix,
+                exclude_overlaps=exclude_overlaps,
+                k=k,
+                dist_col=dist_col,
+                direction=coordinate_direction[direction, strand],
+                ties=ties,
+                preserve_input_order=preserve_input_order,
+            )
+            for strand, strand_self in (
+                (FORWARD_STRAND, forward_self),
+                (REVERSE_STRAND, reverse_self),
+            )
+        ]
+
+        return ensure_pyranges(pd.concat(per_strand))
 
     def overlap(  # type: ignore[override]
         self,
@@ -2422,13 +2447,13 @@ class PyRanges(RangeFrame):
         slack : int, default 0
             Intervals in self are temporarily extended by slack on both ends before overlap is calculated, so that
             we allow non-overlapping intervals to be considered overlapping if they are within less than slack distance
-            e.g. slack=1 reports bookended intervals. A negative slack contracts them instead, and one shorter than
-            twice the slack contracts past itself; with contained_intervals_only such an interval is empty and is
-            reported for every target whose span covers the point it contracted to.
+            e.g. slack=1 reports bookended intervals.
 
         multiple : bool, default False
-            What intervals to report when multiple intervals in 'other' overlap with the same interval in self.
-            If True, each interval is reported once for every overlap, potentially resulting in duplicate indices.
+            What to report when several intervals of 'other' overlap the same interval of self.
+            False reports each interval of self at most once; True reports it once per overlap,
+            potentially resulting in duplicate indices. Only intervals of self are returned, so
+            this option changes how many rows appear, never their content.
 
         contained_intervals_only : bool, default False
             Whether to report only intervals that are entirely contained in an interval of 'other'.
@@ -2505,6 +2530,18 @@ class PyRanges(RangeFrame):
         PyRanges with 5 rows, 4 columns, and 1 index columns (with 2 index duplicates).
         Contains 2 chromosomes.
 
+        RangeFrame.overlap reads the same argument the same way; only the default differs,
+        since a genomic overlap filters by default and a generic one does not:
+
+        >>> gr.overlap(gr2, multiple=True).index.tolist()
+        [0, 0, 1, 1, 2]
+        >>> gr.overlap(gr2, multiple=False).index.tolist()
+        [0, 1, 2]
+        >>> gr.overlap(gr2, multiple="all")
+        Traceback (most recent call last):
+        ...
+        TypeError: overlap takes multiple as a bool: use True for 'all' or False for 'first'.
+
         >>> a = pr.PyRanges({"Chromosome": ["chr1", "chr1"], "Start": [5, 1], "End": [7, 3], "ID": ["A", "B"]})
         >>> b = pr.PyRanges({"Chromosome": ["chr1", "chr1"], "Start": [2, 6], "End": [4, 8]})
         >>> a.overlap(b, multiple=True)
@@ -2572,21 +2609,6 @@ class PyRanges(RangeFrame):
         PyRanges with 4 rows, 4 columns, and 1 index columns.
         Contains 2 chromosomes.
 
-        A negative slack contracts each interval in *self* before the comparison, and an interval
-        shorter than twice the slack contracts past itself. Such an interval is empty, so containment
-        holds for every target whose span covers the point it contracted to -- chr1 10-11 below:
-
-        >>> gr.overlap(gr2, contained_intervals_only=True, slack=-2)
-          index  |    Chromosome      Start      End  ID
-          int64  |    str             int64    int64  str
-        -------  ---  ------------  -------  -------  -----
-              0  |    chr1                1        3  A
-              1  |    chr1                1        3  a
-              2  |    chr2                4        9  b
-              3  |    chr1               10       11  c
-        PyRanges with 4 rows, 4 columns, and 1 index columns.
-        Contains 2 chromosomes.
-
         >>> gr3 = pr.PyRanges({"Chromosome": 1, "Start": [2, 4], "End": [3, 5], "Strand": ["+", "-"]})
         >>> gr3
           index  |      Chromosome    Start      End  Strand
@@ -2607,14 +2629,12 @@ class PyRanges(RangeFrame):
         Contains 1 chromosomes and 1 strands.
 
         """
-        multiple_arg: VALID_OVERLAP_TYPE = "all" if multiple else "first"
-
         _other, by = prepare_by_binary(self, other=other, strand_behavior=strand_behavior, match_by=match_by)
         gr = super().overlap(
             _other,
             match_by=by,
             slack=slack,
-            multiple=multiple_arg,
+            multiple=multiple,
             contained_intervals_only=contained_intervals_only,
             preserve_input_order=preserve_input_order,
         )
@@ -2630,6 +2650,7 @@ class PyRanges(RangeFrame):
         strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto",
         *,
         multiple: VALID_OVERLAP_TYPE = "all",
+        match_by: VALID_BY_TYPES = None,
         preserve_input_order: bool = True,
     ) -> "PyRanges":
         """Return set-theoretical intersection.
@@ -2651,6 +2672,11 @@ class PyRanges(RangeFrame):
             The default "all" reports all overlapping subintervals.
             "first" reports only, for each merged self interval, the overlapping 'other' subinterval with smallest Start
             "last" reports only the overlapping subinterval with the biggest End in 'other'
+
+        match_by : str or list, default None
+            If provided, only intervals with an equal value in column(s) `match_by` may be considered as
+            overlapping. The merging of each input is grouped by these columns too, and they are carried
+            into the result.
 
         preserve_input_order : bool, default True
             Whether to preserve the original input order in the result.
@@ -2720,17 +2746,24 @@ class PyRanges(RangeFrame):
         strand_behavior = validate_and_convert_strand_behavior(self, other, strand_behavior)
 
         use_strand = use_strand_from_validated_strand_behavior(self, other, strand_behavior)
-        self_clusters = self.merge_overlaps(use_strand=use_strand and self.has_strand)
-        other_clusters = other.merge_overlaps(use_strand=use_strand and other.has_strand)
+        self_clusters = self.merge_overlaps(use_strand=use_strand and self.has_strand, match_by=match_by)
+        other_clusters = other.merge_overlaps(use_strand=use_strand and other.has_strand, match_by=match_by)
         result = self_clusters.intersect_overlaps(
             other_clusters,
             strand_behavior=strand_behavior,
             multiple=multiple,
+            match_by=match_by,
             preserve_input_order=preserve_input_order,
         )
         return ensure_pyranges(result.reset_index(drop=True))
 
-    def set_union_overlaps(self, other: "PyRanges", strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto") -> "PyRanges":
+    def set_union_overlaps(
+        self,
+        other: "PyRanges",
+        strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto",
+        *,
+        match_by: VALID_BY_TYPES = None,
+    ) -> "PyRanges":
         """Return set-theoretical union.
 
         Returns the regions present in either self or other.
@@ -2745,6 +2778,10 @@ class PyRanges(RangeFrame):
             Whether to consider overlaps of intervals on the same strand, the opposite or ignore strand
             information. The default, "auto", means use "same" if both PyRanges are stranded (see .strand_valid)
             otherwise ignore the strand information.
+
+        match_by : str or list, default None
+            If provided, the union is taken separately within each group of equal values in column(s)
+            `match_by`, which are carried into the result.
 
         Returns
         -------
@@ -2827,7 +2864,7 @@ class PyRanges(RangeFrame):
 
         gr = pr.concat([_self, other])
 
-        return gr.merge_overlaps(use_strand=use_strand)
+        return gr.merge_overlaps(use_strand=use_strand, match_by=match_by)
 
     def sort_ranges(  # type: ignore[override]
         self,
@@ -2835,12 +2872,19 @@ class PyRanges(RangeFrame):
         *,
         natsort: bool = True,
         use_strand: VALID_USE_STRAND_TYPE = "auto",
+        sort_descending: VALID_BY_TYPES = None,
     ) -> "PyRanges":
         """Sort PyRanges according to Chromosome, Strand (if present), Start, and End; or by the specified columns.
 
         If PyRanges is stranded and use_strand is True, intervals on the negative strand are sorted in descending
         order, and End is considered before Start. This is to have a 5' to 3' order.
         For uses not covered by this function, use  DataFrame.sort_values().
+
+        The full key list is Chromosome, Strand, *by, Start, End, and any column you name in
+        ``by`` is taken out of its implicit position and used where you put it. So
+        ``by=["Strand", "Chromosome"]`` sorts by strand first, and ``by=["Start", "End", "score"]``
+        puts ``score`` after the coordinates. The rule applies per column, so name every key
+        you care about: ``by=["score", "Chromosome"]`` gives Strand, score, Chromosome, Start, End.
 
         Parameters
         ----------
@@ -2851,8 +2895,18 @@ class PyRanges(RangeFrame):
             Whether negative strand intervals should be sorted in descending order, meaning 5' to 3'.
             The default "auto" means True if PyRanges has valid strands (see .strand_valid).
 
+            Note this does not control whether Strand is a sort key: it always is, when the
+            column exists. use_strand=False only stops negative-strand rows being ordered
+            3' to 5'. To sort without grouping by strand, drop or rename the column.
+
         natsort : bool, default True
-            Whether to use natural sorting for Chromosome column, so that e.g. chr2 < chr11.
+            Whether to use natural sorting for string columns, so that e.g. chr2 < chr11.
+
+        sort_descending : str or list of str, default None
+            Keys to sort in reverse. Every name must be one of the sort keys, the implicit
+            Chromosome, Strand, Start and End included; a name that is not raises ValueError.
+            On the coordinate keys this composes with use_strand by XOR, so a reversed row and
+            a reversed key cancel out.
 
         Returns
         -------
@@ -2985,22 +3039,21 @@ class PyRanges(RangeFrame):
         Contains 3 chromosomes and 2 strands.
 
         """
-        from pyranges1._ruranges import require_ruranges
-
-        ruranges = require_ruranges()
-
-        by = arg_to_list(by)
-
         use_strand = validate_and_convert_use_strand(self, use_strand)
 
-        by = ([CHROM_COL] if STRAND_COL not in self else CHROM_AND_STRAND_COLS) + by
-
-        by_sort_order_as_int = sort_factorize_dict(self, by, use_natsort=natsort)
-        idxs = ruranges.numpy.sort_intervals(  # type: ignore[attr-defined]
-            self[START_COL].to_numpy(),
-            self[END_COL].to_numpy(),
-            groups=by_sort_order_as_int,
-            sort_reverse_direction=None if not use_strand else (self[STRAND_COL] == "-").to_numpy(dtype=bool),
+        keys, descending = resolve_sort_keys(
+            self.columns,
+            head=[CHROM_COL] if STRAND_COL not in self else CHROM_AND_STRAND_COLS,
+            by=arg_to_list(by),
+            tail=RANGE_COLS,
+            sort_descending=arg_to_list(sort_descending),
+        )
+        idxs = sort_order(
+            self,
+            keys,
+            descending,
+            use_natsort=natsort,
+            reverse_rows=None if not use_strand else (self[STRAND_COL] == "-").to_numpy(dtype=bool),
         )
         res = self.take(idxs)  # type: ignore[arg-type]
 
@@ -3281,7 +3334,9 @@ class PyRanges(RangeFrame):
         """Split into non-overlapping intervals.
 
         The output does not contain overlapping intervals, but intervals that are adjacent are not merged.
-        No columns other than Chromosome, Start, End, and Strand (if present) are output.
+        Every output interval descends from an input interval and keeps its metadata. With
+        ``between=True`` the gap intervals descend from no input row, so only the location
+        columns are output; ``Strand`` is among them only when it was a grouping key.
 
         Parameters
         ----------
@@ -3347,16 +3402,16 @@ class PyRanges(RangeFrame):
         Contains 1 chromosomes and 2 strands.
 
         >>> gr.split_overlaps(use_strand=False)
-          index  |    Chromosome      Start      End
-          int64  |    str             int64    int64
-        -------  ---  ------------  -------  -------
-              0  |    chr1                3        5
-              1  |    chr1                5        6
-              2  |    chr1                6        7
-              3  |    chr1                7        9
-              4  |    chr1               11       12
-        PyRanges with 5 rows, 3 columns, and 1 index columns.
-        Contains 1 chromosomes.
+          index  |    Chromosome      Start      End  Strand
+          int64  |    str             int64    int64  str
+        -------  ---  ------------  -------  -------  --------
+              0  |    chr1                3        5  +
+              1  |    chr1                5        6  +
+              2  |    chr1                6        7  +
+              3  |    chr1                7        9  -
+              4  |    chr1               11       12  -
+        PyRanges with 5 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
 
         >>> gr.split_overlaps(use_strand=False, between=True)
           index  |    Chromosome      Start      End
@@ -3384,16 +3439,16 @@ class PyRanges(RangeFrame):
         Contains 1 chromosomes and 2 strands.
 
         >>> gr.split_overlaps(use_strand=False, match_by='ID')
-          index  |    Chromosome      Start      End  ID
-          int64  |    str             int64    int64  str
-        -------  ---  ------------  -------  -------  -----
-              0  |    chr1                3        5  a
-              1  |    chr1                5        6  a
-              2  |    chr1                6        7  a
-              3  |    chr1                5        9  b
-              4  |    chr1               11       12  c
-        PyRanges with 5 rows, 4 columns, and 1 index columns.
-        Contains 1 chromosomes.
+          index  |    Chromosome      Start      End  Strand    ID
+          int64  |    str             int64    int64  str       str
+        -------  ---  ------------  -------  -------  --------  -----
+              0  |    chr1                3        5  +         a
+              1  |    chr1                5        6  -         a
+              2  |    chr1                6        7  +         a
+              3  |    chr1                5        9  +         b
+              4  |    chr1               11       12  -         c
+        PyRanges with 5 rows, 5 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
 
         """
         from pyranges1._ruranges import require_ruranges
@@ -3414,10 +3469,12 @@ class PyRanges(RangeFrame):
 
         res = ensure_pyranges(self.take(idxs).reset_index(drop=True))  # type: ignore[arg-type]
         if between:
+            # A gap row descends from no input row, so it carries no metadata; and if
+            # Strand was not a grouping key the gap spans both strands, so no strand
+            # label applies to it either.
             res = res.remove_nonloc_columns()
-
-        if not use_strand:
-            res = res.remove_strand()
+            if not use_strand:
+                res = res.remove_strand()
 
         res.loc[:, START_COL] = starts
         res.loc[:, END_COL] = ends
@@ -3730,7 +3787,7 @@ class PyRanges(RangeFrame):
         self,
         tile_size: int,
         *,
-        use_strand: bool = False,
+        use_strand: VALID_USE_STRAND_TYPE = False,
         match_by: VALID_BY_TYPES = None,
         overlap_column: str | None = None,
     ) -> "PyRanges":
@@ -3941,7 +3998,7 @@ class PyRanges(RangeFrame):
     def to_bed(
         self,
         path: str | None = None,
-        compression: PANDAS_COMPRESSION_TYPE = None,
+        compression: PANDAS_COMPRESSION_TYPE = "infer",
         *,
         keep: bool = True,
     ) -> str | None:
@@ -3956,8 +4013,10 @@ class PyRanges(RangeFrame):
             Whether to keep all columns, not just Chromosome, Start, End,
             Name, Score, Strand when writing.
 
-        compression : str, compression type to use, by default infer based on extension.
-            See pandas.DataFree.to_csv for more info.
+        compression : {'infer', 'gzip', 'bz2', 'zip', 'xz', 'zstd'}, default "infer"
+            Which compression to use. The default infers it from the file extension,
+            and ``None`` is treated the same way: writing to a ``.gz`` path always
+            produces gzip. See pandas.DataFrame.to_csv for more info.
 
         Examples
         --------
@@ -4277,7 +4336,7 @@ class PyRanges(RangeFrame):
     def to_gff3(
         self,
         path: None = None,
-        compression: PANDAS_COMPRESSION_TYPE = None,
+        compression: PANDAS_COMPRESSION_TYPE = "infer",
         map_cols: dict | None = None,
     ) -> str | None:
         r"""Write to General Feature Format 3.
@@ -4304,8 +4363,10 @@ class PyRanges(RangeFrame):
         path : str, default None, i.e. return string representation.
             Where to write file.
 
-        compression : {'infer', 'gzip', 'bz2', 'zip', 'xz', None}, default "infer"
-            Which compression to use. Uses file extension to infer by default.
+        compression : {'infer', 'gzip', 'bz2', 'zip', 'xz', 'zstd'}, default "infer"
+            Which compression to use. The default infers it from the file extension,
+            and ``None`` is treated the same way: writing to a ``.gz`` path always
+            produces gzip.
 
         map_cols: dict, default None
             Override mapping between GTF and PyRanges fields for any number of columns.
@@ -4398,7 +4459,7 @@ class PyRanges(RangeFrame):
     def to_gtf(
         self,
         path: None = None,
-        compression: PANDAS_COMPRESSION_TYPE = None,
+        compression: PANDAS_COMPRESSION_TYPE = "infer",
         map_cols: dict | None = None,
     ) -> str | None:
         r"""Write to Gene Transfer Format.
@@ -4425,8 +4486,10 @@ class PyRanges(RangeFrame):
         path : str, default None, i.e. return string representation.
             Where to write file.
 
-        compression : {'infer', 'gzip', 'bz2', 'zip', 'xz', None}, default "infer"
-            Which compression to use. Uses file extension to infer by default.
+        compression : {'infer', 'gzip', 'bz2', 'zip', 'xz', 'zstd'}, default "infer"
+            Which compression to use. The default infers it from the file extension,
+            and ``None`` is treated the same way: writing to a ``.gz`` path always
+            produces gzip.
 
         map_cols: dict, default None
             Override mapping between GTF and PyRanges fields for any number of columns.
@@ -5386,8 +5449,9 @@ class PyRanges(RangeFrame):
         ----------
         group_by : str or list, default *None*
             Additional column(s) that must match for two intervals to share a
-            cumulative coordinate space.  When *None* all intervals on the same
-            chromosome are cumulated together.
+            cumulative coordinate space. ``Chromosome`` always does, and
+            ``Strand`` too when *use_strand* resolves to True, so when *None* all
+            intervals on the same chromosome and strand are cumulated together.
         cumsum_start_column, cumsum_end_column : str | None, default None
             Names of the columns added to the returned frame. If None is given,
             Start and End is used.
@@ -5441,7 +5505,17 @@ class PyRanges(RangeFrame):
         ruranges = require_ruranges()
 
         strand = validate_and_convert_use_strand(self, use_strand)
-        group_by = arg_to_list(group_by)
+        # Chromosome (and Strand, when strand-aware) always partition the cumulative
+        # space: two intervals on different chromosomes do not share a coordinate
+        # system, whether or not the caller named further grouping columns.
+        # The caller's own keys lead, because the key order decides how groups are
+        # numbered and so the order rows come back in; only the key *set* affects
+        # which intervals share a cumulative space.
+        group_by = [
+            *arg_to_list(group_by),
+            CHROM_COL,
+            *([STRAND_COL] if strand else []),
+        ]
         group_ids = factorize(self, group_by)
 
         forward = (self[STRAND_COL] == FORWARD_STRAND).to_numpy() if strand else np.ones(self.shape[0], dtype=np.bool_)
@@ -5486,9 +5560,9 @@ class PyRanges(RangeFrame):
 
         multiple : {"all", "first", "last"}, default "all"
             What intervals to report when multiple intervals in 'other' overlap with the same interval in self.
-            The default "all" reports all overlapping subintervals, which will have duplicate indices.
-            "first" reports only, for each interval in self, the overlapping subinterval with smallest Start in 'other'
-            "last" reports only the overlapping subinterval with the biggest End in 'other'
+            The default "all" reports one subinterval per overlapping pair, which will have
+            duplicate indices. "first" reports only the subinterval clipped against the interval
+            of 'other' with the smallest Start; "last" clips against the one with the biggest End.
 
         strand_behavior : {"auto", "same", "opposite", "ignore"}, default "auto"
             Whether to consider overlaps of intervals on the same strand, the opposite or ignore strand
