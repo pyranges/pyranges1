@@ -1,3 +1,6 @@
+# 1.4.5 (21.09.26)
+- **fix**: explicitly convert the chromosome-size total used by `stats.forbes` to a Python `int`, matching the helper's return type and fixing CI type checking with current pandas stubs
+
 # 1.4.4 (08.09.26)
 - `to_bigwig` takes a keyword-only `precomputed` option. With `precomputed=True`, it writes each non-overlapping input range with its `value_col` value directly, bypassing coverage calculation and run merging; `rpm` is ignored and `divide=True` is rejected (gh-176)
 - **fix**: weighted coverage no longer leaves floating-point residue in genuinely uncovered regions. An exact active-interval count identifies gaps without erasing legitimate tiny values in covered regions
