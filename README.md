@@ -89,6 +89,20 @@ the same frame:
 pip install pyranges1[fast-io]   # or [add-ons], or [all]
 ```
 
+Reading then runs on every core by default. To pin how many, or to go back to
+the single-threaded parser:
+
+```python
+import pyranges1 as pr
+
+pr.set_num_threads(4)                          # kernels and readers alike
+pr.options.set_option("use_pyarrow", False)    # the pandas parser, same frame
+```
+
+`set_num_threads` reaches the interval kernels too, but those read their count
+once, when the first operation runs — call it before that or they keep the
+count they started with.
+
 Details at https://pyranges1.readthedocs.io/en/latest/installation.html
 
 

@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from natsort import natsorted  # type: ignore[import]
 
+from pyranges1.core.options import option_manager
 from pyranges1.core.pyranges_helpers import ensure_pyranges
 
 if TYPE_CHECKING:
@@ -172,11 +173,27 @@ def _pyarrow_csv() -> "tuple | None":
 
     Every fast path in this module goes through here, so there is exactly one
     place to disable, and the tests that run each reader both ways patch it.
+
+    `pr.options.set_option("use_pyarrow", False)` also lands here. It is an
+    option rather than a reader argument because the readers mirror
+    polaranges', which parses through Polars and has no pyarrow to switch; a
+    `use_pyarrow=` parameter would be a pyranges1-only argument on a shared
+    signature, while options are free to differ between the two.
     """
+    requested = option_manager.get_option("use_pyarrow")
+    if requested is False:
+        return None
     try:
         import pyarrow as pa
         from pyarrow import csv as pacsv
     except ImportError:
+        if requested:
+            msg = (
+                'pr.options.set_option("use_pyarrow", True) was set but pyarrow is '
+                "not installed. Install it with `pip install pyranges1[fast-io]`, or "
+                'set the option back to None to fall back to the pandas parser.'
+            )
+            raise ImportError(msg) from None
         return None
     return pa, pacsv
 
@@ -565,6 +582,10 @@ def read_gtf_full(
         chunksize=chunksize,
         duplicate_attr=duplicate_attr,
         ignore_bad=ignore_bad,
+        # gtfreader parses the fixed GTF columns through its own pyarrow path,
+        # which `_pyarrow_csv` above cannot reach, so the option is forwarded
+        # rather than applied here.
+        use_pyarrow=option_manager.get_option("use_pyarrow"),
     )
     return ensure_pyranges(df)
 

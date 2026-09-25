@@ -13,7 +13,10 @@ fail here too.
 
 from __future__ import annotations
 
+import builtins
 import gzip
+import os
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -466,3 +469,109 @@ def test_gate_reports_missing_pyarrow(no_pyarrow_import):
 def test_readers_work_without_pyarrow(tmp_path, no_pyarrow_import, reader, name, contents):
     path = write(tmp_path, contents, name)
     assert len(reader(path)) > 0
+
+
+# --------------------------------------------------------------------------
+# pr.options["use_pyarrow"] and pr.set_num_threads
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def reset_options():
+    yield
+    pr.options.reset_options()
+
+
+@pytest.mark.parametrize(
+    ("reader", "contents", "bundled"),
+    [
+        (pr.read_bed, BED_CORPUS["bed6"], None),
+        (pr.read_gff3, GFF3_CORPUS["bare"], None),
+        (pr.read_gtf, None, "ensembl.gtf"),
+    ],
+    ids=["bed", "gff3", "gtf"],
+)
+def test_use_pyarrow_option_changes_nothing_but_speed(
+    tmp_path, requires_pyarrow, reset_options, reader, contents, bundled
+):
+    """The option is a speed knob, never a result knob.
+
+    `read_gtf` matters most here: its parse lives in gtfreader, behind a fast
+    path this module's own gate cannot reach, so it is only covered if the
+    option is forwarded.
+    """
+    path = DATA / bundled if bundled else write(tmp_path, contents, name="input")
+    default = reader(path)
+    pr.options.set_option("use_pyarrow", False)
+    forced = reader(path)
+    assert_frame_equal(default, forced)
+
+
+def test_use_pyarrow_option_closes_both_gates(requires_pyarrow, reset_options):
+    assert readers._pyarrow_csv() is not None
+    pr.options.set_option("use_pyarrow", False)
+    assert readers._pyarrow_csv() is None, "pyranges1's own readers still on the fast path"
+    pr.options.reset_options()
+    assert readers._pyarrow_csv() is not None, "reset_options must restore the default"
+
+
+def test_set_num_threads_sets_every_pool():
+    """One call has to reach all three pools, or a benchmark measures a mixture."""
+    applied = pr.set_num_threads(2)
+    assert applied == 2
+    # Read by rayon when it builds its global pool, and inherited by subprocesses.
+    assert os.environ["RAYON_NUM_THREADS"] == "2"
+    assert os.environ["OMP_NUM_THREADS"] == "2"
+    assert os.environ["ARROW_IO_THREADS"] == "2"
+
+    pa = pytest.importorskip("pyarrow")
+    # The environment alone would not have moved these: pyarrow reads it once,
+    # when it builds the pools at import.
+    assert pa.cpu_count() == 2
+    assert pa.io_thread_count() == 2
+
+    restored = pr.set_num_threads()
+    assert restored == (os.cpu_count() or 1)
+
+
+def test_set_num_threads_rejects_zero():
+    with pytest.raises(ValueError, match="at least 1"):
+        pr.set_num_threads(0)
+
+
+def test_use_pyarrow_true_requires_pyarrow(monkeypatch, reset_options):
+    """Asking for the fast parse and silently getting the slow one is worse than an error.
+
+    Only an explicit True insists; the default still falls back, which is the
+    install the optional extra exists to protect.
+    """
+    monkeypatch.setattr(readers, "_pyarrow_csv", readers._pyarrow_csv)
+    monkeypatch.setitem(sys.modules, "pyarrow", None)
+    pr.options.set_option("use_pyarrow", True)
+    with pytest.raises(ImportError, match="pyarrow is not installed"):
+        readers._pyarrow_csv()
+    pr.options.set_option("use_pyarrow", None)
+    assert readers._pyarrow_csv() is None, "the default must still fall back"
+
+
+def test_set_num_threads_does_not_import_pyarrow(monkeypatch):
+    """It resizes pyarrow if it is loaded; it never loads it to do so.
+
+    pyarrow is an optional dependency, and pulling it in from a thread setter
+    would make a call that does not need it pay for the import.
+    """
+    monkeypatch.delitem(sys.modules, "pyarrow", raising=False)
+    monkeypatch.setattr(builtins, "__import__", _forbid_pyarrow(builtins.__import__))
+    assert pr.set_num_threads(2) == 2
+    assert "pyarrow" not in sys.modules
+    assert os.environ["OMP_NUM_THREADS"] == "2", "the variables still carry the count"
+
+
+def _forbid_pyarrow(real):
+    def guard(name, *args, **kwargs):
+        if name.split(".")[0] == "pyarrow":
+            msg = "set_num_threads imported pyarrow"
+            raise AssertionError(msg)
+        return real(name, *args, **kwargs)
+
+    return guard
