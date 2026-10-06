@@ -30,10 +30,19 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 keywords = ["bioinformatics", "genomicranges", "genomics"]
-dependencies = ["pandas", "tabulate", "natsort", "ruranges>=0.1.8", "gtfreader>=0.2.0"]
+dependencies = ["pandas", "tabulate", "natsort", "ruranges>=0.1.8", "gtfreader>=0.3.0"]
 
 [project.optional-dependencies]
+# pyarrow parses on every core instead of one: read_bed is 10-18x faster on
+# large files, where the parse is the whole read, and read_gtf and read_gff3
+# around 1.3-1.5x, where expanding the attribute column is the bulk of the work
+# instead of one. It is optional: without it read_bed falls back to pandas and
+# returns exactly the same frame, just more slowly. Kept as its own extra so it
+# can be installed without the heavier add-ons, and included in add-ons so that
+# `pyranges1[add-ons]` and `pyranges1[all]` both get it.
+fast-io = ["pyarrow"]
 add-ons = [
+    "pyranges1[fast-io]",
     "pyrle >= 0.0.43",
     "bamread",
     "pysam",
@@ -119,8 +128,11 @@ deps =
     pytest
     pyright == 1.1.406
     joblib
-    gtfreader >= 0.2.0
+    gtfreader >= 0.3.0
     ruranges >= 0.1.8
+    # The readers run every test twice, once on each parser. Without pyarrow
+    # here the fast half silently skips, which is how a broken fast path ships.
+    pyarrow
     # fisher
 commands =
     pyright

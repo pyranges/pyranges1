@@ -10,6 +10,7 @@ from pyranges1.core.multioverlap import count_overlaps  # noqa: F401
 from pyranges1.core.options import option_manager as options  # noqa: F401
 from pyranges1.core.pyranges_main import PyRanges  # noqa: F401
 from pyranges1.core.random import random  # noqa: F401
+from pyranges1.core.threads import set_num_threads  # noqa: F401
 from pyranges1.core.version import __version__  # noqa: F401
 from pyranges1.methods.concat import concat  # noqa: F401
 from pyranges1.methods.tile_genome import tile_genome  # noqa: F401
