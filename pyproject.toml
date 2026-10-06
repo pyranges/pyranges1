@@ -48,7 +48,6 @@ add-ons = [
     "pysam",
     "pyfaidx",
     "pyBigWig",
-    "pyarrow",
     "pybigtools",
     "joblib",
 ] #"fisher",
@@ -116,10 +115,9 @@ deps =
     pyBigWig
     pyfaidx
     # optional-format readers/writers, so their doctests + tests run in CI
-    # instead of being importorskip-ped: pysam (SAM/CRAM/VCF), pyarrow (Parquet),
-    # pybigtools (bigBed).
+    # instead of being importorskip-ped: pysam (SAM/CRAM/VCF), pybigtools
+    # (bigBed), and pyarrow (Parquet), which is listed below for the readers.
     pysam
-    pyarrow
     pybigtools
     tox
     ruff == 0.14.1
