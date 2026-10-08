@@ -891,3 +891,51 @@ The usual arguments (e.g. ``use_strand``) are available:
         7  |    chr1               28       30  +                 2  b
   PyRanges with 4 rows, 6 columns, and 1 index columns.
   Contains 1 chromosomes and 1 strands.
+
+
+Definitions
+===========
+
+The operations above, stated exactly. Intervals are half-open, ``[Start, End)``. Only intervals on the
+same chromosome are compared, and also on the same strand or with equal ``match_by`` values when those
+arguments ask for it. ``tests/unit/test_oracle.py`` checks each definition against a brute-force
+implementation on random intervals.
+
+**Overlap, with slack.** Intervals ``a`` and ``b`` overlap under ``slack`` *k* when::
+
+    max(a.Start, b.Start) - min(a.End, b.End) < k
+
+With *k* = 0 this is ordinary overlap: they share a base. *k* = 1 also pairs bookended intervals, and
+*k* bridges gaps of up to *k* - 1 bases. A gap of two bases needs ``slack=3``:
+
+  >>> gap2 = pr.PyRanges(dict(Chromosome="chr1", Start=[0, 12], End=[10, 20]))
+  >>> len(gap2.merge_overlaps(slack=2)), len(gap2.merge_overlaps(slack=3))
+  (2, 1)
+
+**Pairs of PyRanges** (``a`` from self, ``b`` from other):
+
+- ``overlap``: the rows ``a`` that overlap some ``b``.
+- ``count_overlaps``: for each ``a``, the number of ``b`` it overlaps.
+- ``join_overlaps``: one row per overlapping pair ``(a, b)``.
+- ``intersect_overlaps``: one row per overlapping pair, ``[max(a.Start, b.Start), min(a.End, b.End))``.
+- ``subtract_overlaps``: each ``a`` without the bases any ``b`` covers; what is left of ``a`` stays in
+  its row (or rows, if a ``b`` cuts it in two).
+- ``set_union_overlaps``: ``merge_overlaps`` of self and other together.
+- ``set_intersect_overlaps``: ``intersect_overlaps`` of ``merge_overlaps`` of each. As in
+  ``merge_overlaps`` with ``slack=0``, the intervals of both set operations do not overlap but can be
+  bookended; ``merge_overlaps(slack=1)`` joins those.
+- ``nearest_ranges``: the ``b`` at the smallest distance from ``a``, where the distance is 0 for
+  overlapping intervals and otherwise ``max(a.Start, b.Start) - min(a.End, b.End) + 1``, so bookended
+  intervals are at 1, as in ``bedtools closest -d``. It is the smallest ``slack`` at which they overlap.
+
+**A single PyRanges:**
+
+- ``cluster_overlaps``: intervals linked by a chain of overlaps share a cluster, even when the ends
+  of the chain do not overlap each other (the connected components of the overlap graph).
+- ``merge_overlaps``: one interval per cluster, ``[min Start, max End)``.
+- ``split_overlaps``: with *t*\ :sub:`1` < *t*\ :sub:`2` < ... the distinct Starts and Ends, the pieces
+  ``[t_i, t_i+1)`` that some interval covers; with ``between=True`` also the uncovered pieces between the
+  first and the last.
+- ``complement_ranges``: the uncovered stretches between the first and the last interval of each
+  chromosome (or group). ``chromsizes`` adds the stretch after the last interval, and
+  ``include_first_interval=True`` the one before the first.
