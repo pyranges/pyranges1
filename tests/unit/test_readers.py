@@ -287,12 +287,12 @@ def test_read_gff3_reads_a_file_with_a_fasta_section(tmp_path, mode):
 
     Its sequence lines are ragged rows, so pandas pads them with NaN, and
     `to_keys_and_values` called `rstrip` on the NaN. A row with no attributes
-    has nothing to expand; that is not a parse error.
+    has nothing to expand; that is not a parse error. The records end where the
+    section begins, so its lines are not read as records at all.
     """
-    path = write(tmp_path, GFF3_LINE + "##FASTA\n>chr1\nACGTACGT\n", "test.gff3")
-    frame = pr.read_gff3(path)
-    assert frame.iloc[0]["ID"] == "g1"
-    assert pd.isna(frame.iloc[-1]["ID"])
+    path = write(tmp_path, GFF3_LINE + GFF3_LINE + "##FASTA\n>chr1\nACGTACGT\n", "test.gff3")
+    assert pr.read_gff3(path)["ID"].tolist() == ["g1", "g1"]
+    assert pr.read_gff3(path, nrows=1)["ID"].tolist() == ["g1"]
 
 
 def test_read_gff3_reads_an_empty_attribute_field(tmp_path, mode):
