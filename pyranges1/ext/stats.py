@@ -156,19 +156,24 @@ def fdr(p_vals: Series) -> Series:
       int64  |    str               int64      int64  str          float64     float64
     -------  ---  ------------  ---------  ---------  --------  ----------  ----------
           0  |    chr3          146419383  146419483  -         0.00395914  0.00593871
-          1  |    chr6           39800100   39800200  +         0.00376005  0.0112802
+          1  |    chr6           39800100   39800200  +         0.00376005  0.00593871
           2  |    chr13          24537618   24537718  -         0.00750612  0.00750612
     PyRanges with 3 rows, 6 columns, and 1 index columns.
     Contains 3 chromosomes and 2 strands.
 
     """
-    from scipy.stats import rankdata  # type: ignore[import]
+    p = np.asarray(p_vals, dtype=float)
+    tested = ~np.isnan(p)
+    order = np.argsort(p[tested])
+    m = len(order)
+    # p * m / rank, then the running minimum from the largest p down, which
+    # makes the adjusted values monotone in p. Missing p-values are not tests:
+    # they stay missing and do not count towards m.
+    scaled = p[tested][order] * m / np.arange(1, m + 1)
+    adjusted = np.full(p.shape, np.nan)
+    adjusted[np.flatnonzero(tested)[order]] = np.minimum(np.minimum.accumulate(scaled[::-1])[::-1], 1)
 
-    ranked_p_values = rankdata(p_vals)
-    fdr = p_vals * len(p_vals) / ranked_p_values
-    fdr[fdr > 1] = 1
-
-    return fdr
+    return pd.Series(adjusted, index=p_vals.index, name=p_vals.name) if isinstance(p_vals, Series) else adjusted
 
 
 def fisher_exact(tp: Series, fp: Series, fn: Series, tn: Series, pseudocount: int = 0) -> DataFrame:

@@ -6,8 +6,10 @@ import pandas as pd
 import pyranges1 as pr  # noqa: F401
 
 # thanks to Devon Ryan at https://bioinformatics.stackexchange.com/questions/3583/what-is-the-fastest-way-to-get-the-reverse-complement-of-a-dna-sequence-in-pytho
-complement = str.maketrans("ACTGactg", "TGACtgac")
-rnacomplement = str.maketrans("ACUGacug", "UGACugac")
+# IUPAC ambiguity codes complement too: R (A/G) <-> Y (C/T), K (G/T) <-> M (A/C),
+# B (not A) <-> V (not T), D (not C) <-> H (not G); S, W and N are their own.
+complement = str.maketrans("ACTGRYKMBVDHactgrykmbvdh", "TGACYRMKVBHDtgacyrmkvbhd")
+rnacomplement = str.maketrans("ACUGRYKMBVDHacugrykmbvdh", "UGACYRMKVBHDugacyrmkvbhd")
 
 # build alternative genetic code translation tables based on NCBI codes
 GENETIC_CODES = {}  # will store dict of dicts: {genetic_code_id: {codon:aminoacid} }
