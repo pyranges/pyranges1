@@ -181,7 +181,7 @@ class PyRanges(RangeFrame):
             df.__class__ = pr.PyRanges
             return df
 
-        df = pd.DataFrame(kwargs.get("../data") or args[0])
+        df = pd.DataFrame(kwargs["data"] if "data" in kwargs else args[0])
         missing_any_required_columns = not set(GENOME_LOC_COLS).issubset({*df.columns})
         if missing_any_required_columns:
             return df
