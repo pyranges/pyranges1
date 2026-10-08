@@ -249,6 +249,10 @@ def _to_bigwig(
         size_df = chromosome_sizes
         chromosome_sizes = dict(zip(size_df[CHROM_COL], size_df[END_COL], strict=True))
 
+    missing = [c for c in unique_chromosomes if c not in chromosome_sizes]
+    if missing:
+        msg = f"chromosome_sizes has no size for {missing}."
+        raise ValueError(msg)
     header = [(c, int(chromosome_sizes[c])) for c in unique_chromosomes]
 
     bw = pyBigWig.open(path, "w")
@@ -519,7 +523,8 @@ def _to_bigbed(
         vals = zip(chroms, starts, ends, rest, strict=True)
         sql = autosql or _build_bigbed_autosql(rest_cols, [self[c].dtype for c in rest_cols])
     else:
-        vals = zip(chroms, starts, ends, strict=True)
+        # pybigtools takes (chrom, start, end, rest) even when there is no rest.
+        vals = zip(chroms, starts, ends, [""] * len(chroms), strict=True)
         sql = autosql
 
     ordered_sizes = {c: sizes[c] for c in sorted(sizes)}

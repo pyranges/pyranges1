@@ -119,3 +119,16 @@ def test_to_bigbed_roundtrip() -> None:
     assert b"name" in sql
     assert b"strand" in sql
     Path(bb).unlink()
+
+
+def test_to_bigbed_bed3_roundtrip(tmp_path) -> None:
+    pytest.importorskip("pybigtools")
+    gr = pr.PyRanges({"Chromosome": ["chr1", "chr1", "chr2"], "Start": [1, 10, 5], "End": [5, 20, 9]})
+    path = str(tmp_path / "bed3.bb")
+    gr.to_bigbed(path)
+    back = pr.read_bigbed(path)
+    assert list(zip(back["Chromosome"].astype(str), back["Start"], back["End"], strict=True)) == [
+        ("chr1", 1, 5),
+        ("chr1", 10, 20),
+        ("chr2", 5, 9),
+    ]
