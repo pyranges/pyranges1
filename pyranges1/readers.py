@@ -1,7 +1,7 @@
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import gtfreader
 import numpy as np
@@ -191,7 +191,7 @@ def _pyarrow_csv() -> "tuple | None":
             msg = (
                 'pr.options.set_option("use_pyarrow", True) was set but pyarrow is '
                 "not installed. Install it with `pip install pyranges1[fast-io]`, or "
-                'set the option back to None to fall back to the pandas parser.'
+                "set the option back to None to fall back to the pandas parser."
             )
             raise ImportError(msg) from None
         return None
@@ -297,7 +297,7 @@ def _arrow_read_csv(
         return None
     pa, pacsv = modules
 
-    dictionary = pa.dictionary(pa.int32(), pa.string())
+    dictionary: object = pa.dictionary(pa.int32(), pa.string())
     column_types: dict[str, object] = dict.fromkeys(dictionary_columns, dictionary)
     # Pinned rather than inferred: inference turns a coordinate too large for
     # int64 into a float, quietly rounding it, where pandas keeps the integer.
@@ -370,12 +370,12 @@ def _read_bed_pyarrow(
     header: int | None,
 ) -> "pd.DataFrame | None":
     """Read a BED file with `pyarrow.csv`, or return None to use pandas."""
-    named = header != 0 and names is not None
+    named = names if header != 0 and names is not None else []
     table = _arrow_read_csv(
         path,
         column_names=names if header != 0 else None,
-        dictionary_columns=tuple(c for c in ("Chromosome", "Strand") if named and c in names),
-        integer_columns=tuple(c for c in ("Start", "End") if named and c in names),
+        dictionary_columns=tuple(c for c in ("Chromosome", "Strand") if c in named),
+        integer_columns=tuple(c for c in ("Start", "End") if c in named),
     )
     return None if table is None else _arrow_to_pandas(table)
 
@@ -585,7 +585,7 @@ def read_gtf_full(
         # gtfreader parses the fixed GTF columns through its own pyarrow path,
         # which `_pyarrow_csv` above cannot reach, so the option is forwarded
         # rather than applied here.
-        use_pyarrow=option_manager.get_option("use_pyarrow"),
+        use_pyarrow=cast("bool | None", option_manager.get_option("use_pyarrow")),
     )
     return ensure_pyranges(df)
 

@@ -55,7 +55,7 @@ def _chromsizes_as_int(chromsizes: "PyRanges | DataFrame | dict[Any, int]") -> i
         msg = f"chromsizes must be dict, DataFrame or PyRanges, was {type(chromsizes)}"
         raise TypeError(msg)
 
-    return _chromsizes
+    return int(_chromsizes)
 
 
 def _mcc(tp: int, fp: int, tn: int, fn: int) -> float:
