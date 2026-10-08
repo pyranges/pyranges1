@@ -4208,6 +4208,118 @@ class PyRanges(RangeFrame):
 
         return _to_bigbed(self, path, chromosome_sizes, autosql)
 
+    def bigwig_stats(
+        self,
+        path: "str | Path | Mapping[str, str | Path]",
+        stats: str | Iterable[str] = "mean",
+        *,
+        missing: float | None = None,
+        pad: int = 0,
+        bins: int | None = None,
+        use_strand: VALID_USE_STRAND_TYPE = "auto",
+        prefix: str = "",
+    ) -> "PyRanges":
+        """Summarise bigWig signal over each interval.
+
+        Adds one column per statistic, keeping every row and the index. Only the
+        parts of the bigWig that overlap an interval are read, through its index.
+
+        Parameters
+        ----------
+        path : str, Path or dict
+            A bigWig file, or a dict of {label: file} to summarise several at once;
+            their columns are then named "{label}_{stat}".
+
+        stats : str or list of str, default "mean"
+            Any of "mean", "max", "min", "sum" and "std" (the sample standard deviation,
+            as pyBigWig reports it).
+
+        missing : float, default None
+            Value for bases the bigWig has no data for. None leaves them out, so
+            "mean" is over the covered bases, as pyBigWig and deepTools compute it;
+            0.0 makes it the mean over the whole interval.
+
+        pad : int, default 0
+            Bases added to both ends of each interval before reading, clamped to the
+            chromosome.
+
+        bins : int, default None
+            Split each interval into this many equal-width bins and add one column per
+            bin and statistic, "{stat}_{i}": a regions x bins signal matrix, as deepTools
+            computeMatrix builds.
+
+        use_strand : {"auto", True, False}, default "auto"
+            With bins, number them from the 5' end, so bins of "-" intervals run from End
+            to Start. The default "auto" means True if PyRanges has valid strands (see
+            .strand_valid).
+
+        prefix : str, default ""
+            Prepended to every new column name.
+
+        Returns
+        -------
+        PyRanges
+            PyRanges with the new columns. Intervals on chromosomes the bigWig does not
+            have, or with no covered bases, get NaN.
+
+        See Also
+        --------
+        pyranges1.read_bigwig : read a whole bigWig as intervals
+        PyRanges.to_bigwig : write coverage as a bigWig
+
+        Examples
+        --------
+        >>> path = pr.example_data.files["bigwig.bw"]
+        >>> pr.read_bigwig(path)
+          index  |      Chromosome    Start      End      Value
+          int64  |        category    int64    int64    float64
+        -------  ---  ------------  -------  -------  ---------
+              0  |               1        0        1        0.1
+              1  |               1        1        2        0.2
+              2  |               1        2        3        0.3
+              3  |               1      100      150        1.4
+              4  |               1      150      151        1.5
+              5  |              10      200      300        2
+        PyRanges with 6 rows, 4 columns, and 1 index columns.
+        Contains 2 chromosomes.
+
+        >>> gr = pr.PyRanges({"Chromosome": ["1", "1", "10"], "Start": [0, 100, 250], "End": [10, 151, 400]})
+        >>> gr.bigwig_stats(path, ["mean", "max"])
+          index  |      Chromosome    Start      End       mean        max
+          int64  |             str    int64    int64    float64    float64
+        -------  ---  ------------  -------  -------  ---------  ---------
+              0  |               1        0       10    0.2            0.3
+              1  |               1      100      151    1.40196        1.5
+              2  |              10      250      400    2              2
+        PyRanges with 3 rows, 5 columns, and 1 index columns.
+        Contains 2 chromosomes.
+
+        >>> gr.bigwig_stats(path, missing=0.0)
+          index  |      Chromosome    Start      End       mean
+          int64  |             str    int64    int64    float64
+        -------  ---  ------------  -------  -------  ---------
+              0  |               1        0       10   0.06
+              1  |               1      100      151   1.40196
+              2  |              10      250      400   0.666667
+        PyRanges with 3 rows, 4 columns, and 1 index columns.
+        Contains 2 chromosomes.
+
+        >>> gr.bigwig_stats(path, bins=2)
+          index  |      Chromosome    Start      End     mean_0     mean_1
+          int64  |             str    int64    int64    float64    float64
+        -------  ---  ------------  -------  -------  ---------  ---------
+              0  |               1        0       10        0.2  nan
+              1  |               1      100      151        1.4    1.40385
+              2  |              10      250      400        2    nan
+        PyRanges with 3 rows, 5 columns, and 1 index columns.
+        Contains 2 chromosomes.
+
+        """
+        from pyranges1.methods.bigwig_stats import _bigwig_stats, _reverse_rows
+
+        reverse = _reverse_rows(self, use_strand=bins is not None and validate_and_convert_use_strand(self, use_strand))
+        return _bigwig_stats(self, path, stats, missing, pad, bins, reverse, prefix)
+
     def to_bigwig(
         self: "pr.PyRanges",
         path: None = None,
