@@ -21,24 +21,8 @@ def read_csv(path: str, **kwargs) -> pr.PyRanges:
     return ensure_pyranges(pr.PyRanges(df))
 
 
-# 1) Available readers (no from_string)
-READERS = {
-    "read_bed": pr.read_bed,
-    "read_gtf": pr.read_gtf,
-    "read_gff": pr.read_gff,
-    "read_gff3": pr.read_gff3,
-    "read_bam": pr.read_bam,
-    "read_bigwig": pr.read_bigwig,
-    "read_bigbed": pr.read_bigbed,
-    "read_sam": pr.read_sam,
-    "read_cram": pr.read_cram,
-    "read_vcf": pr.read_vcf,
-    "read_pairs": pr.read_pairs,
-    "read_paf": pr.read_paf,
-    "read_narrowPeak": pr.read_narrowPeak,
-    "read_parquet": pr.read_parquet,
-    "read_csv": read_csv,
-}
+# 1) Available readers (no from_string): every pyranges1.read_*, and CSV through pandas
+READERS = {name: getattr(pr, name) for name in dir(pr) if name.startswith("read_")} | {"read_csv": read_csv}
 
 
 def show_usage() -> None:
