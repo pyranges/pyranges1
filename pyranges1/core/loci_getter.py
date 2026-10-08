@@ -59,7 +59,14 @@ class LociGetter:
 
 
 def _rows_matching_chrom(gr: "PyRanges", chrom: str | int | None) -> "pd.Series[bool]":
-    return (gr[CHROM_COL].astype(type(chrom)) == chrom) if chrom is not None else pd.Series(data=True, index=gr.index)
+    if chrom is None:
+        return pd.Series(data=True, index=gr.index)
+    column = gr[CHROM_COL]
+    if isinstance(column.dtype, pd.CategoricalDtype):
+        # Cast the categories rather than every row: the same match, at the cost of the categories.
+        hits = np.flatnonzero(column.cat.categories.astype(type(chrom)) == chrom)
+        return pd.Series(np.isin(column.cat.codes.to_numpy(), hits), index=gr.index)
+    return column.astype(type(chrom)) == chrom
 
 
 def _rows_matching_strand(gr: "PyRanges", strand: str | None) -> "pd.Series[bool]":

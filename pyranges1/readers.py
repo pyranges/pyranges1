@@ -27,7 +27,11 @@ _HASH = ord("#")
 
 
 def from_string(s: str) -> "PyRanges":
-    """Create a PyRanges from multiline string.
+    r"""Create a PyRanges from multiline string.
+
+    Three forms are understood: a whitespace-separated table with a header; positions as
+    the UCSC and IGV position boxes show them, one per line ("chr1:1,000-2,000", 1-based and
+    inclusive, optionally ":+" or ":-"); and BED lines without a header.
 
     Parameters
     ----------
@@ -56,8 +60,64 @@ def from_string(s: str) -> "PyRanges":
     PyRanges with 5 rows, 4 columns, and 1 index columns.
     Contains 4 chromosomes and 2 strands.
 
+
+    Positions copied from a genome browser:
+
+    >>> pr.from_string("chrX:24,897,376-24,899,115")
+      index  |    Chromosome       Start       End
+      int64  |    str              int64     int64
+    -------  ---  ------------  --------  --------
+          0  |    chrX          24897375  24899115
+    PyRanges with 1 rows, 3 columns, and 1 index columns.
+    Contains 1 chromosomes.
+
+    >>> pr.from_string("chr1:101-200:+\nchr2:51-60:-")
+      index  |    Chromosome      Start      End  Strand
+      int64  |    str             int64    int64  str
+    -------  ---  ------------  -------  -------  --------
+          0  |    chr1              100      200  +
+          1  |    chr2               50       60  -
+    PyRanges with 2 rows, 4 columns, and 1 index columns.
+    Contains 2 chromosomes and 2 strands.
+
+    BED lines without a header:
+
+    >>> pr.from_string("chr1\t100\t200\tpeak1\nchr2\t50\t60\tpeak2")
+      index  |    Chromosome      Start      End  Name
+      int64  |    str             int64    int64  str
+    -------  ---  ------------  -------  -------  ------
+          0  |    chr1              100      200  peak1
+          1  |    chr2               50       60  peak2
+    PyRanges with 2 rows, 4 columns, and 1 index columns.
+    Contains 2 chromosomes.
+
     """
+    import re
     from io import StringIO
+
+    # A position as genome browsers show it: chr1:1,000-2,000, optionally :+ or :-.
+    position = re.compile(r"^\s*([^\s:]+)\s*:\s*([\d,]+)\s*-\s*([\d,]+)\s*(?::\s*([+\-.]))?\s*$")
+    lines = [line for line in s.strip().splitlines() if line.strip()]
+    positions = [position.match(line) for line in lines]
+    if lines and all(positions):
+        matches = [m for m in positions if m is not None]
+        starts = [int(m.group(2).replace(",", "")) - 1 for m in matches]
+        ends = [int(m.group(3).replace(",", "")) for m in matches]
+        if any(start < 0 or end <= start for start, end in zip(starts, ends, strict=True)):
+            msg = "Positions are 1-based and inclusive: the start must be at least 1 and at most the end."
+            raise ValueError(msg)
+        df = pd.DataFrame({"Chromosome": [m.group(1) for m in matches], "Start": starts, "End": ends})
+        if any(m.group(4) for m in matches):
+            df["Strand"] = [m.group(4) or "." for m in matches]
+        return ensure_pyranges(df)
+
+    fields = re.split(r"\s+", lines[0].strip()) if lines else []
+    if len(fields) >= 3 and all(re.fullmatch(r"-?\d+", f) for f in fields[1:3]):  # noqa: PLR2004
+        from pyranges1.core.out import _BED_EXTRA_ORDER
+
+        df = pd.read_csv(StringIO(s), sep=r"\s+", header=None)
+        df.columns = pd.Index(["Chromosome", "Start", "End", *_BED_EXTRA_ORDER][: df.shape[1]])
+        return ensure_pyranges(df)
 
     df = pd.read_csv(StringIO(s), sep=r"\s+", index_col=None)
 
