@@ -62,3 +62,16 @@ def test_gtf_attributes_print_nullable_integers_as_integers() -> None:
         'chr1\t.\texon\t21\t25\t.\t+\t.\tgene_id "g";',
     ]
     assert gr.to_gff3().splitlines()[0].endswith("gene_id=g;exon_number=1")
+
+
+def test_to_bed_tabix_writes_an_indexed_file(tmp_path) -> None:
+    pysam = pytest.importorskip("pysam")
+    gr = pr.PyRanges({"Chromosome": ["chr2", "chr1", "chr1"], "Start": [5, 300, 100], "End": [9, 400, 200], "Name": list("abc")})
+    path = tmp_path / "peaks.bed.gz"
+    gr.to_bed(path, tabix=True)
+    assert (tmp_path / "peaks.bed.gz.tbi").exists()
+    with pysam.TabixFile(str(path)) as tbx:
+        assert [line.split("\t")[3] for line in tbx.fetch("chr1", 150, 350)] == ["c", "b"]
+        assert sorted(tbx.contigs) == ["chr1", "chr2"]
+    with pytest.raises(ValueError, match=".gz"):
+        gr.to_bed(tmp_path / "peaks.bed", tabix=True)

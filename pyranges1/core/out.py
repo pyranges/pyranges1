@@ -174,8 +174,13 @@ def _to_bed(
     compression: PANDAS_COMPRESSION_TYPE = "infer",
     *,
     keep: bool = True,
+    tabix: bool = False,
 ) -> str | None:
     df = _bed(self, keep=keep)
+
+    if tabix:
+        _to_bed_tabix(df, path, compression)
+        return None
 
     return df.to_csv(
         path,
@@ -186,6 +191,26 @@ def _to_bed(
         sep="\t",
         quoting=csv.QUOTE_NONE,
     )
+
+
+def _to_bed_tabix(df: DataFrame, path: str | Path | None, compression: PANDAS_COMPRESSION_TYPE) -> None:
+    """Write `df` sorted and BGZF-compressed to `path`, and index it with tabix beside it."""
+    if path is None or not str(path).endswith((".gz", ".bgz")) or compression not in ("infer", "gzip", None):
+        msg = "tabix=True writes a bgzip-compressed file: give a path ending in .gz or .bgz, and no other compression."
+        raise ValueError(msg)
+    try:
+        import pysam  # type: ignore[import]
+    except ImportError:
+        msg = "pysam must be installed to write a tabix-indexed BED file. Use `pip install pysam`."
+        raise ImportError(msg) from None
+
+    # tabix needs each chromosome contiguous and sorted by start.
+    text = df.sort_values([CHROM_COL, START_COL, END_COL], kind="stable").to_csv(
+        index=False, header=False, sep="\t", quoting=csv.QUOTE_NONE
+    )
+    with pysam.BGZFile(str(path), "wb", index=None) as fh:
+        fh.write(text.encode())
+    pysam.tabix_index(str(path), preset="bed", force=True)
 
 
 def _merged_runs(rles: "RleDict") -> "RleDict":

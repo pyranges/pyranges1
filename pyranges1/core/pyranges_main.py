@@ -4001,6 +4001,7 @@ class PyRanges(RangeFrame):
         compression: PANDAS_COMPRESSION_TYPE = "infer",
         *,
         keep: bool = True,
+        tabix: bool = False,
     ) -> str | None:
         r"""Write to bed.
 
@@ -4017,6 +4018,11 @@ class PyRanges(RangeFrame):
             Which compression to use. The default infers it from the file extension,
             and ``None`` is treated the same way: writing to a ``.gz`` path always
             produces gzip. See pandas.DataFrame.to_csv for more info.
+
+        tabix : bool, default False
+            Write a sorted, bgzip-compressed file and its tabix index (path + ".tbi"), so
+            that read_bed(region=), IGV and tabix can read a region without the rest. The
+            path must end in .gz or .bgz. Needs pysam.
 
         Examples
         --------
@@ -4058,7 +4064,7 @@ class PyRanges(RangeFrame):
         """
         from pyranges1.core.out import _to_bed
 
-        return _to_bed(self, path, keep=keep, compression=compression)
+        return _to_bed(self, path, keep=keep, compression=compression, tabix=tabix)
 
     def to_parquet(self, path: str | None = None, *, index: bool = False, **kwargs) -> bytes | None:  # type: ignore[override]
         r"""Write to Parquet.
