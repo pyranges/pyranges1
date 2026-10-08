@@ -6127,6 +6127,77 @@ class PyRanges(RangeFrame):
 
         return ensure_pyranges(result)
 
+    def liftover_ranges(
+        self,
+        chain: "PyRanges | str | Path",
+        *,
+        min_match: float = 0.95,
+        return_unmapped: bool = False,
+    ) -> "PyRanges | tuple[PyRanges, PyRanges]":
+        r"""Move intervals to another assembly through a UCSC chain, as liftOver does.
+
+        An interval is lifted when exactly one chain covers at least min_match of its
+        bases; it becomes the span from the first to the last of those bases on the new
+        assembly, with its strand flipped where the chain is on "-". Every other column
+        is kept. Intervals that cannot be lifted are left out, or returned separately
+        with liftOver's reason.
+
+        Parameters
+        ----------
+        chain : PyRanges, str or Path
+            A chain file, e.g. hg19ToHg38.over.chain.gz, or its blocks as read_chain
+            returns them.
+
+        min_match : float, default 0.95
+            Fraction of an interval's bases one chain must cover, as liftOver -minMatch.
+
+        return_unmapped : bool, default False
+            Also return the intervals not lifted, with a LiftReason column: "Deleted in
+            new" (no chain), "Partially deleted in new" (one chain, covering too little),
+            "Split in new" (several chains, none covering enough) or "Duplicated in new"
+            (several chains covering enough).
+
+        Returns
+        -------
+        PyRanges, or (PyRanges, PyRanges) with return_unmapped
+
+        See Also
+        --------
+        pyranges1.read_chain : read a chain file
+
+        Examples
+        --------
+        One chain maps chr1:100-300 onto chrA, with a 30 bp gap; another maps chr1:500-600
+        onto the minus strand of chrB.
+
+        >>> from tempfile import NamedTemporaryFile
+        >>> tmp = NamedTemporaryFile("w", suffix=".chain")
+        >>> _ = tmp.write("chain 100 chr1 1000 + 100 300 chrA 2000 + 500 710 1\n50 30 40\n120\n\n"
+        ...               "chain 50 chr1 1000 + 500 600 chrB 900 - 0 100 2\n100\n\n")
+        >>> tmp.flush()
+        >>> gr = pr.PyRanges(dict(Chromosome="chr1", Start=[110, 520, 140], End=[140, 530, 200],
+        ...                       Strand=["+", "+", "+"], Name=["a", "b", "c"]))
+        >>> lifted, unmapped = gr.liftover_ranges(tmp.name, return_unmapped=True)
+        >>> lifted
+          index  |    Chromosome      Start      End  Strand    Name
+          int64  |    str             int64    int64  str       str
+        -------  ---  ------------  -------  -------  --------  ------
+              0  |    chrA              510      540  +         a
+              1  |    chrB              870      880  -         b
+        PyRanges with 2 rows, 5 columns, and 1 index columns.
+        Contains 2 chromosomes and 2 strands.
+
+        >>> unmapped[["Name", "LiftReason"]]
+          Name                LiftReason
+        2    c  Partially deleted in new
+
+        """
+        from pyranges1.methods.liftover import _liftover, _read_chain
+
+        blocks = chain if isinstance(chain, pd.DataFrame) else _read_chain(chain)
+        lifted, unmapped = _liftover(self, ensure_pyranges(blocks), min_match=min_match)
+        return (lifted, unmapped) if return_unmapped else lifted
+
     def get_sequence(
         self: "PyRanges",
         path: Path | None = None,

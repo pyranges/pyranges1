@@ -1613,6 +1613,43 @@ def _flatten_vcf_info(value: object) -> object:
     return value
 
 
+def read_chain(f: "str | Path", /) -> "PyRanges":
+    r"""Return a UCSC chain file (liftOver) as PyRanges, one row per gapless block.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to the chain file, e.g. hg19ToHg38.over.chain.gz (may be gzip-compressed).
+
+    Returns
+    -------
+    PyRanges
+        Chromosome, Start, End: the block on the assembly lifted from. QueryChromosome,
+        QueryStart, QueryEnd: the same bases on the assembly lifted to, in forward-strand
+        coordinates also on a "-" chain. QueryStrand, ChainId, ChainScore.
+
+    See Also
+    --------
+    PyRanges.liftover_ranges : lift intervals through a chain
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".chain")
+    >>> _ = tmp.write("chain 100 chr1 1000 + 100 300 chrA 2000 + 500 710 1\n50 30 40\n120\n\n")
+    >>> tmp.flush()
+    >>> pr.read_chain(tmp.name)[["Start", "End", "QueryChromosome", "QueryStart", "QueryEnd"]]
+       Start  End QueryChromosome  QueryStart  QueryEnd
+    0    100  150            chrA         500       550
+    1    180  300            chrA         590       710
+
+    """
+    from pyranges1.methods.liftover import _read_chain
+
+    return _read_chain(f)
+
+
 def read_vcf(
     f: "str | Path",
     /,

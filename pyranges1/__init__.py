@@ -21,6 +21,7 @@ from pyranges1.readers import (  # noqa: F401
     read_bed,
     read_bigbed,
     read_bigwig,
+    read_chain,
     read_cram,
     read_gff3,
     read_gtf,
