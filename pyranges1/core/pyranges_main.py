@@ -4217,6 +4217,34 @@ class PyRanges(RangeFrame):
 
         return _to_pairs(self, path)
 
+    def to_bedgraph(self, path: str | None = None, value_col: str = "Value") -> str | None:
+        r"""Write to bedGraph.
+
+        The companion reader is :func:`pyranges1.read_bedgraph`. Writes Chromosome, Start,
+        End and `value_col`; a ``.gz`` path is gzip-compressed.
+
+        Parameters
+        ----------
+        path : str, default None
+            Where to write. If None, returns the string representation.
+
+        value_col : str, default "Value"
+            The column holding the signal.
+
+        Returns
+        -------
+        str or None
+
+        Examples
+        --------
+        >>> pr.PyRanges({"Chromosome": ["chr1"], "Start": [0], "End": [10], "Value": [1.5]}).to_bedgraph()
+        'chr1\t0\t10\t1.5\n'
+
+        """
+        from pyranges1.methods.signal_formats import _to_bedgraph
+
+        return _to_bedgraph(self, path, value_col)
+
     def to_bigbed(
         self,
         path: str,
@@ -4261,34 +4289,6 @@ class PyRanges(RangeFrame):
         from pyranges1.core.out import _to_bigbed
 
         return _to_bigbed(self, path, chromosome_sizes, autosql)
-
-    def to_bedgraph(self, path: str | None = None, value_col: str = "Value") -> str | None:
-        r"""Write to bedGraph.
-
-        The companion reader is :func:`pyranges1.read_bedgraph`. Writes Chromosome, Start,
-        End and `value_col`; a ``.gz`` path is gzip-compressed.
-
-        Parameters
-        ----------
-        path : str, default None
-            Where to write. If None, returns the string representation.
-
-        value_col : str, default "Value"
-            The column holding the signal.
-
-        Returns
-        -------
-        str or None
-
-        Examples
-        --------
-        >>> pr.PyRanges({"Chromosome": ["chr1"], "Start": [0], "End": [10], "Value": [1.5]}).to_bedgraph()
-        'chr1\t0\t10\t1.5\n'
-
-        """
-        from pyranges1.methods.signal_formats import _to_bedgraph
-
-        return _to_bedgraph(self, path, value_col)
 
     def to_bigwig(
         self: "pr.PyRanges",
