@@ -1,5 +1,4 @@
 import logging
-import sys
 import warnings
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Literal
@@ -359,10 +358,8 @@ def extend_orfs(  # noqa: C901,PLR0912,PLR0915
     try:
         import pyfaidx  # type: ignore[import]
     except ImportError:
-        LOGGER.exception(
-            "To use extend_orfs, pyfaidx must be installed. Use `conda install -c bioconda pyfaidx` or `pip install pyfaidx` to install pyfaidx.",
-        )
-        sys.exit(1)
+        msg = "To use extend_orfs, pyfaidx must be installed. Use `conda install -c bioconda pyfaidx` or `pip install pyfaidx` to install pyfaidx."
+        raise ImportError(msg) from None
 
     def pverbose(msg: Any) -> None:
         if verbose:
