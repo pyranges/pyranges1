@@ -770,6 +770,76 @@ class PyRanges(RangeFrame):
         _other, by = prepare_by_binary(self, other=other, strand_behavior=strand_behavior, match_by=match_by)
         return super().count_overlaps(_other, match_by=by, slack=slack)
 
+    def coverage_ranges(
+        self,
+        value_col: str | None = None,
+        use_strand: VALID_USE_STRAND_TYPE = "auto",
+        *,
+        match_by: VALID_BY_TYPES = None,
+        coverage_col: str = "Coverage",
+    ) -> "PyRanges":
+        """Return the depth of coverage as runs of constant depth, as bedtools genomecov -bg.
+
+        Each output interval is a maximal stretch covered by the same number of intervals
+        (or, with value_col, the same sum of that column); stretches with no coverage are
+        left out. No pyrle needed.
+
+        Parameters
+        ----------
+        value_col : str, default None
+            Sum this column over the covering intervals, instead of counting them.
+
+        use_strand : {"auto", True, False}, default "auto"
+            Whether to compute coverage separately for each strand. The default "auto"
+            means True if PyRanges has valid strands (see .strand_valid).
+
+        match_by : str or list, default None
+            Compute coverage separately for each value of these column(s).
+
+        coverage_col : str, default "Coverage"
+            Name of the column with the depth.
+
+        Returns
+        -------
+        PyRanges
+            Chromosome, Start, End, the grouping columns, and the depth; sorted.
+
+        See Also
+        --------
+        PyRanges.to_rle : coverage as pyrle run-length vectors
+        PyRanges.merge_overlaps : the covered regions, without depth
+
+        Examples
+        --------
+        >>> reads = pr.PyRanges(dict(Chromosome="chr1", Start=[0, 5, 5, 20], End=[10, 10, 15, 25]))
+        >>> reads.coverage_ranges()
+          index  |    Chromosome      Start      End    Coverage
+          int64  |    str             int64    int64       int64
+        -------  ---  ------------  -------  -------  ----------
+              0  |    chr1                0        5           1
+              1  |    chr1                5       10           3
+              2  |    chr1               10       15           1
+              3  |    chr1               20       25           1
+        PyRanges with 4 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes.
+
+        >>> reads.assign(Weight=[1.0, 0.5, 0.5, 2.0]).coverage_ranges("Weight")
+          index  |    Chromosome      Start      End    Coverage
+          int64  |    str             int64    int64     float64
+        -------  ---  ------------  -------  -------  ----------
+              0  |    chr1                0        5         1
+              1  |    chr1                5       10         2
+              2  |    chr1               10       15         0.5
+              3  |    chr1               20       25         2
+        PyRanges with 4 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes.
+
+        """
+        from pyranges1.methods.coverage_ranges import _coverage_ranges
+
+        by = prepare_by_single(self, use_strand=use_strand, match_by=match_by)
+        return _coverage_ranges(self, by, value_col, coverage_col)
+
     def count_overlaps(  # type: ignore[override]
         self,
         other: "PyRanges",
