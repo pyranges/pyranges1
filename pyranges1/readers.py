@@ -1717,3 +1717,82 @@ def read_vcf(
         df[k] = v
 
     return ensure_pyranges(df)
+
+
+def read_bedgraph(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":
+    r"""Return bedGraph file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to bedGraph file (may be gzip-compressed).
+
+    nrows : int, default None
+        Number of rows to read. Default None (all).
+
+    Returns
+    -------
+    PyRanges
+        Columns Chromosome, Start, End and Value (float64). Leading track, browser and
+        ``#`` lines are skipped.
+
+    See Also
+    --------
+    PyRanges.to_bedgraph : write a bedGraph file
+    pyranges1.read_wig : read a WIG file
+    pyranges1.read_bigwig : read a bigWig file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".bedGraph")
+    >>> _ = tmp.write("track type=bedGraph\nchr1\t0\t10\t1.5\nchr1\t10\t25\t3\n")
+    >>> tmp.flush()
+    >>> gr = pr.read_bedgraph(tmp.name)
+    >>> list(gr.columns), gr["Value"].tolist()
+    (['Chromosome', 'Start', 'End', 'Value'], [1.5, 3.0])
+
+    """
+    from pyranges1.methods.signal_formats import _read_bedgraph
+
+    return _read_bedgraph(f, nrows)
+
+
+def read_wig(f: "str | Path", /) -> "PyRanges":
+    r"""Return WIG (wiggle) file as PyRanges.
+
+    Reads fixedStep and variableStep sections into one interval per value, converting
+    WIG's 1-based positions to 0-based, half-open intervals. A fixedStep section without
+    a span covers each whole step, as UCSC's wigToBigWig reads it.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to WIG file (may be gzip-compressed).
+
+    Returns
+    -------
+    PyRanges
+        Columns Chromosome, Start, End and Value (float64).
+
+    See Also
+    --------
+    pyranges1.read_bedgraph : read a bedGraph file
+    pyranges1.read_bigwig : read a bigWig file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".wig")
+    >>> _ = tmp.write("variableStep chrom=chr1 span=5\n101\t2\nfixedStep chrom=chr2 start=11 step=10\n0.5\n1\n")
+    >>> tmp.flush()
+    >>> gr = pr.read_wig(tmp.name)
+    >>> list(zip(gr["Chromosome"], gr["Start"], gr["End"], gr["Value"]))
+    [('chr1', 100, 105, 2.0), ('chr2', 10, 20, 0.5), ('chr2', 20, 30, 1.0)]
+
+    """
+    from pyranges1.methods.signal_formats import _read_wig
+
+    return _read_wig(f)
