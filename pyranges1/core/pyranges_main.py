@@ -4102,7 +4102,9 @@ class PyRanges(RangeFrame):
 
         The companion reader is :func:`pyranges1.read_narrowPeak`. Columns
         Chromosome, Start, End, Name, Score, Strand, SignalValue, PValue, QValue,
-        Peak are written in that order; any missing column is filled with ``.``.
+        Peak are written in that order. A missing column is filled as the format
+        does for a value that is not available: Name and Strand ``.``, Score 0, and
+        -1 for SignalValue, PValue, QValue and Peak.
 
         Parameters
         ----------
@@ -4128,6 +4130,72 @@ class PyRanges(RangeFrame):
         from pyranges1.core.out import _to_narrowpeak
 
         return _to_narrowpeak(self, path, compression=compression)
+
+    def to_broadPeak(  # noqa: N802
+        self,
+        path: str | None = None,
+        compression: PANDAS_COMPRESSION_TYPE = None,
+    ) -> str | None:
+        r"""Write to ENCODE broadPeak (BED6+3).
+
+        The companion reader is :func:`pyranges1.read_broadPeak`. Columns Chromosome,
+        Start, End, Name, Score, Strand, SignalValue, PValue, QValue are written in that
+        order, a missing one filled as for to_narrowPeak.
+
+        Parameters
+        ----------
+        path : str, default None
+            Where to write. If None, returns the string representation.
+
+        compression : str, default None
+            Compression type; by default inferred from the extension.
+
+        Returns
+        -------
+        str or None
+
+        Examples
+        --------
+        >>> pr.PyRanges({"Chromosome": ["chr1"], "Start": [100], "End": [900], "SignalValue": [2.5]}).to_broadPeak()
+        'chr1\t100\t900\t.\t0\t.\t2.5\t-1\t-1\n'
+
+        """
+        from pyranges1.core.out import _to_broadpeak
+
+        return _to_broadpeak(self, path, compression=compression)
+
+    def to_gappedPeak(  # noqa: N802
+        self,
+        path: str | None = None,
+        compression: PANDAS_COMPRESSION_TYPE = None,
+    ) -> str | None:
+        r"""Write to ENCODE gappedPeak (BED12+3).
+
+        The companion reader is :func:`pyranges1.read_gappedPeak`. The twelve BED columns
+        are written, then SignalValue, PValue, QValue. Without block columns, each peak is
+        one block spanning it; other missing columns are filled as for to_narrowPeak.
+
+        Parameters
+        ----------
+        path : str, default None
+            Where to write. If None, returns the string representation.
+
+        compression : str, default None
+            Compression type; by default inferred from the extension.
+
+        Returns
+        -------
+        str or None
+
+        Examples
+        --------
+        >>> pr.PyRanges({"Chromosome": ["chr1"], "Start": [100], "End": [500]}).to_gappedPeak()
+        'chr1\t100\t500\t.\t0\t.\t100\t500\t0\t1\t400,\t0,\t-1\t-1\t-1\n'
+
+        """
+        from pyranges1.core.out import _to_gappedpeak
+
+        return _to_gappedpeak(self, path, compression=compression)
 
     def to_pairs(self, path: str | None = None) -> str | None:
         r"""Write to the 4DN Hi-C ``.pairs`` format.

@@ -371,21 +371,63 @@ _NARROWPEAK_COLUMNS = [
 ]
 
 
+# What the ENCODE formats write for a value that is not available.
+_PEAK_DEFAULTS = {"Name": ".", "Score": 0, "Strand": ".", "SignalValue": -1, "PValue": -1, "QValue": -1, "Peak": -1}
+
+
+def _to_peaks(
+    self: PyRanges,
+    columns: list[str],
+    path: str | None = None,
+    compression: PANDAS_COMPRESSION_TYPE = None,
+) -> str | None:
+    """Write an ENCODE peak file with these columns, filling missing ones with the formats' defaults."""
+    defaults: dict[str, object] = dict(_PEAK_DEFAULTS)
+    if "BlockCount" in columns:  # gappedPeak: one block spanning each peak, unless there are blocks
+        defaults |= {
+            "ThickStart": self[START_COL],
+            "ThickEnd": self[END_COL],
+            "ItemRGB": "0",
+            "BlockCount": 1,
+            "BlockSizes": (self[END_COL] - self[START_COL]).astype(str) + ",",
+            "BlockStarts": "0,",
+        }
+    filled = {c: self[c] if c in self.columns else defaults[c] for c in columns}
+    return pd.DataFrame(filled, index=self.index).to_csv(
+        path,
+        index=False,
+        header=False,
+        compression=_resolve_compression(compression),
+        mode="w+",
+        sep="\t",
+        quoting=csv.QUOTE_NONE,
+    )
+
+
 def _to_narrowpeak(
     self: PyRanges,
     path: str | None = None,
     compression: PANDAS_COMPRESSION_TYPE = None,
 ) -> str | None:
-    df = _fill_missing(self, _NARROWPEAK_COLUMNS)
-    return df.to_csv(
-        path,
-        index=False,
-        header=False,
-        compression=compression,
-        mode="w+",
-        sep="\t",
-        quoting=csv.QUOTE_NONE,
-    )
+    return _to_peaks(self, _NARROWPEAK_COLUMNS, path, compression)
+
+
+def _to_broadpeak(
+    self: PyRanges,
+    path: str | None = None,
+    compression: PANDAS_COMPRESSION_TYPE = None,
+) -> str | None:
+    return _to_peaks(self, _NARROWPEAK_COLUMNS[:-1], path, compression)
+
+
+def _to_gappedpeak(
+    self: PyRanges,
+    path: str | None = None,
+    compression: PANDAS_COMPRESSION_TYPE = None,
+) -> str | None:
+    from pyranges1.readers import _GAPPEDPEAK_COLUMNS
+
+    return _to_peaks(self, _GAPPEDPEAK_COLUMNS, path, compression)
 
 
 _PAIRS_REQUIRED = ["Chromosome", "Start", "Strand", "OtherChromosome", "OtherStart", "OtherStrand"]
