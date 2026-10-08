@@ -4,7 +4,7 @@ import logging
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, Literal, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -1041,6 +1041,80 @@ class PyRanges(RangeFrame):
         result.loc[:, START_COL] = starts
         result.loc[:, END_COL] = ends
         return ensure_pyranges(result)
+
+    def resize_ranges(
+        self,
+        width: int,
+        fix: Literal["start", "end", "center"] = "center",
+        *,
+        use_strand: VALID_USE_STRAND_TYPE = "auto",
+    ) -> "PyRanges":
+        """Give every interval the same width, keeping its start, end or center in place.
+
+        As GenomicRanges::resize: fix="start" keeps the 5' end, fix="end" the 3' end, and
+        fix="center" the center, with any odd base to the right whatever the strand.
+        Intervals are not clipped to the chromosome; see clip_ranges.
+
+        Parameters
+        ----------
+        width : int
+            The new width of every interval, at least 1.
+
+        fix : {"start", "end", "center"}, default "center"
+            Which part of each interval stays in place.
+
+        use_strand : {"auto", True, False}, default "auto"
+            Whether "start" and "end" are the 5' and 3' ends, so on "-" intervals End and
+            Start. The default "auto" means True if PyRanges has valid strands (see
+            .strand_valid). Ignored for fix="center".
+
+        Returns
+        -------
+        PyRanges
+            The intervals with new coordinates, and every other column unchanged.
+
+        See Also
+        --------
+        PyRanges.extend_ranges : lengthen intervals at their 5' and/or 3' ends
+        PyRanges.promoters : the region around each 5' end
+        PyRanges.clip_ranges : clip intervals to chromosome bounds
+
+        Examples
+        --------
+        >>> gr = pr.PyRanges(dict(Chromosome="chr1", Start=[10, 10], End=[20, 20], Strand=["+", "-"]))
+        >>> gr.resize_ranges(4, fix="start")
+          index  |    Chromosome      Start      End  Strand
+          int64  |    str             int64    int64  str
+        -------  ---  ------------  -------  -------  --------
+              0  |    chr1               10       14  +
+              1  |    chr1               16       20  -
+        PyRanges with 2 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
+
+        >>> gr.resize_ranges(3)
+          index  |    Chromosome      Start      End  Strand
+          int64  |    str             int64    int64  str
+        -------  ---  ------------  -------  -------  --------
+              0  |    chr1               13       16  +
+              1  |    chr1               13       16  -
+        PyRanges with 2 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
+
+        The midpoint of each interval:
+
+        >>> gr.resize_ranges(1)
+          index  |    Chromosome      Start      End  Strand
+          int64  |    str             int64    int64  str
+        -------  ---  ------------  -------  -------  --------
+              0  |    chr1               14       15  +
+              1  |    chr1               14       15  -
+        PyRanges with 2 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
+
+        """
+        from pyranges1.methods.resize import _resize
+
+        return _resize(self, width, fix, use_strand=validate_and_convert_use_strand(self, use_strand))
 
     def five_end(
         self,
@@ -4686,6 +4760,60 @@ class PyRanges(RangeFrame):
             rpm=rpm,
         )
 
+    def promoters(
+        self,
+        upstream: int = 2000,
+        downstream: int = 200,
+        *,
+        use_strand: VALID_USE_STRAND_TYPE = "auto",
+    ) -> "PyRanges":
+        """Return the promoter region around the 5' end of each interval.
+
+        As GenomicRanges::promoters: [TSS - upstream, TSS + downstream), where the TSS is
+        Start on "+" and unstranded intervals and End on "-" ones, mirrored on "-". The
+        result has one row per interval, and is not clipped to the chromosome; see
+        clip_ranges.
+
+        Parameters
+        ----------
+        upstream : int, default 2000
+            Bases before the 5' end.
+
+        downstream : int, default 200
+            Bases from the 5' end on, into the interval.
+
+        use_strand : {"auto", True, False}, default "auto"
+            Whether "-" intervals start at End. The default "auto" means True if PyRanges
+            has valid strands (see .strand_valid).
+
+        Returns
+        -------
+        PyRanges
+            The promoters, and every other column unchanged.
+
+        See Also
+        --------
+        PyRanges.five_end : the 5' end of each interval
+        PyRanges.upstream : the region upstream of each interval
+        PyRanges.clip_ranges : clip intervals to chromosome bounds
+
+        Examples
+        --------
+        >>> gr = pr.PyRanges(dict(Chromosome="chr1", Start=[100, 100], End=[150, 150], Strand=["+", "-"]))
+        >>> gr.promoters(upstream=20, downstream=5)
+          index  |    Chromosome      Start      End  Strand
+          int64  |    str             int64    int64  str
+        -------  ---  ------------  -------  -------  --------
+              0  |    chr1               80      105  +
+              1  |    chr1              145      170  -
+        PyRanges with 2 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
+
+        """
+        from pyranges1.methods.resize import _promoters
+
+        return _promoters(self, upstream, downstream, use_strand=validate_and_convert_use_strand(self, use_strand))
+
     def upstream(
         self: "PyRanges",
         length: int,
@@ -6303,6 +6431,70 @@ class PyRanges(RangeFrame):
             seq = gr.groupby(group_by, as_index=True).agg({sequence_column: "".join})[sequence_column]
 
         return seq.astype(object)
+
+    def shuffle_ranges(
+        self,
+        chromsizes: "dict[str | int, int] | pd.DataFrame | pyfaidx.Fasta",
+        *,
+        within_chromosomes: bool = False,
+        exclude: "PyRanges | None" = None,
+        seed: "int | np.random.Generator | None" = None,
+    ) -> "PyRanges":
+        """Move each interval to a random place in the genome, keeping its length.
+
+        The null model of bedtools shuffle: every place an interval fits is equally
+        likely. Strand, the index and every other column are kept; only Chromosome,
+        Start and End change.
+
+        Parameters
+        ----------
+        chromsizes : dict, DataFrame or pyfaidx.Fasta
+            Chromosome sizes, as clip_ranges takes them. Intervals are placed only on
+            these chromosomes.
+
+        within_chromosomes : bool, default False
+            Keep each interval on its own chromosome.
+
+        exclude : PyRanges, optional
+            Regions no interval may overlap, e.g. a blacklist or assembly gaps. Strand is
+            ignored.
+
+        seed : int or numpy.random.Generator, optional
+            For a reproducible shuffle.
+
+        Returns
+        -------
+        PyRanges
+            The intervals at their new places.
+
+        Raises
+        ------
+        ValueError
+            If an interval fits nowhere, or a chromosome of self is missing from chromsizes.
+
+        See Also
+        --------
+        pyranges1.random : random intervals
+        PyRanges.clip_ranges : clip intervals to chromosome bounds
+
+        Examples
+        --------
+        >>> gr = pr.PyRanges(dict(Chromosome=["chr1", "chr2"], Start=[0, 5], End=[10, 8], Name=["a", "b"]))
+        >>> shuffled = gr.shuffle_ranges({"chr1": 1000, "chr2": 500}, seed=0)
+        >>> (shuffled["End"] - shuffled["Start"]).tolist(), shuffled["Name"].tolist()
+        ([10, 3], ['a', 'b'])
+
+        Keep each interval on its own chromosome, and out of excluded regions:
+
+        >>> blacklist = pr.PyRanges(dict(Chromosome=["chr1"], Start=[0], End=[900]))
+        >>> on_chr1 = gr.shuffle_ranges({"chr1": 1000, "chr2": 500}, within_chromosomes=True, exclude=blacklist, seed=1)
+        >>> on_chr1["Chromosome"].tolist(), bool(on_chr1["Start"].iloc[0] >= 900)
+        (['chr1', 'chr2'], True)
+
+        """
+        from pyranges1.methods.shuffle import _shuffle
+
+        return _shuffle(self, chromsizes, within_chromosomes=within_chromosomes, exclude=exclude, seed=seed)
 
     def clip_ranges(
         self: "PyRanges",
