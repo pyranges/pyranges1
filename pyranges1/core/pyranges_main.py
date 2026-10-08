@@ -6432,6 +6432,70 @@ class PyRanges(RangeFrame):
 
         return seq.astype(object)
 
+    def shuffle_ranges(
+        self,
+        chromsizes: "dict[str | int, int] | pd.DataFrame | pyfaidx.Fasta",
+        *,
+        within_chromosomes: bool = False,
+        exclude: "PyRanges | None" = None,
+        seed: "int | np.random.Generator | None" = None,
+    ) -> "PyRanges":
+        """Move each interval to a random place in the genome, keeping its length.
+
+        The null model of bedtools shuffle: every place an interval fits is equally
+        likely. Strand, the index and every other column are kept; only Chromosome,
+        Start and End change.
+
+        Parameters
+        ----------
+        chromsizes : dict, DataFrame or pyfaidx.Fasta
+            Chromosome sizes, as clip_ranges takes them. Intervals are placed only on
+            these chromosomes.
+
+        within_chromosomes : bool, default False
+            Keep each interval on its own chromosome.
+
+        exclude : PyRanges, optional
+            Regions no interval may overlap, e.g. a blacklist or assembly gaps. Strand is
+            ignored.
+
+        seed : int or numpy.random.Generator, optional
+            For a reproducible shuffle.
+
+        Returns
+        -------
+        PyRanges
+            The intervals at their new places.
+
+        Raises
+        ------
+        ValueError
+            If an interval fits nowhere, or a chromosome of self is missing from chromsizes.
+
+        See Also
+        --------
+        pyranges1.random : random intervals
+        PyRanges.clip_ranges : clip intervals to chromosome bounds
+
+        Examples
+        --------
+        >>> gr = pr.PyRanges(dict(Chromosome=["chr1", "chr2"], Start=[0, 5], End=[10, 8], Name=["a", "b"]))
+        >>> shuffled = gr.shuffle_ranges({"chr1": 1000, "chr2": 500}, seed=0)
+        >>> (shuffled["End"] - shuffled["Start"]).tolist(), shuffled["Name"].tolist()
+        ([10, 3], ['a', 'b'])
+
+        Keep each interval on its own chromosome, and out of excluded regions:
+
+        >>> blacklist = pr.PyRanges(dict(Chromosome=["chr1"], Start=[0], End=[900]))
+        >>> on_chr1 = gr.shuffle_ranges({"chr1": 1000, "chr2": 500}, within_chromosomes=True, exclude=blacklist, seed=1)
+        >>> on_chr1["Chromosome"].tolist(), bool(on_chr1["Start"].iloc[0] >= 900)
+        (['chr1', 'chr2'], True)
+
+        """
+        from pyranges1.methods.shuffle import _shuffle
+
+        return _shuffle(self, chromsizes, within_chromosomes=within_chromosomes, exclude=exclude, seed=seed)
+
     def clip_ranges(
         self: "PyRanges",
         chromsizes: "dict[str | int, int] | PyRanges | None" = None,
