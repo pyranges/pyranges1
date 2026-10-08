@@ -4316,7 +4316,11 @@ class PyRanges(RangeFrame):
         """
         from pyranges1.core.out import _to_bigwig
 
-        _chromosome_sizes = pr.example_data.chromsizes if chromosome_sizes is None else chromosome_sizes
+        _chromosome_sizes = (
+            self.groupby(CHROM_COL, observed=True)[END_COL].max().to_dict()
+            if chromosome_sizes is None
+            else chromosome_sizes
+        )
 
         result = _to_bigwig(
             self=self,

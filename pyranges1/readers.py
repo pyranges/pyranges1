@@ -837,6 +837,10 @@ def read_bigwig(f: str | Path) -> "PyRanges":
             intervals = bw.intervals(chromosome, start, end)
             if intervals is not None:
                 for s, e, v in intervals:
+                    # An interval that crosses into this window was already read
+                    # with the window it starts in.
+                    if s < start:
+                        continue
                     outstarts.append(s)
                     outends.append(e)
                     outvalues.append(v)
