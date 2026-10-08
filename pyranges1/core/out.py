@@ -1,7 +1,7 @@
 import csv
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
@@ -79,13 +79,27 @@ def _bed(df: DataFrame, *, keep: bool) -> DataFrame:
     bed_columns = ["Chromosome", "Start", "End", "Name", "Score", "Strand"]
 
     outdf = _fill_missing(df, bed_columns)
+    if not keep:
+        return outdf
 
-    noncanonical = list(set(df.columns) - set(bed_columns))
-    noncanonical = [c for c in df.columns if c in noncanonical]
+    # BED columns are positional, so the BED12 fields go in their places whatever the
+    # frame's column order, up to the last one present; the rest follow as extras.
+    bed12 = _BED_EXTRA_ORDER[3:]
+    present = [c for c in bed12 if c in df.columns]
+    standard = bed12[: bed12.index(present[-1]) + 1] if present else []
+    defaults = {"ThickStart": df[START_COL], "ThickEnd": df[END_COL], "ItemRGB": "0"}
+    filled = {}
+    for column in standard:
+        if column in df.columns:
+            filled[column] = df[column]
+        elif column in defaults:
+            filled[column] = defaults[column]
+        else:
+            msg = f"BED columns are positional: {present[-1]} needs {column} before it."
+            raise ValueError(msg)
 
-    if keep:
-        return pd.concat([outdf, df[noncanonical]], axis=1)
-    return outdf
+    noncanonical = [c for c in df.columns if c not in bed_columns and c not in standard]
+    return pd.concat([outdf, pd.DataFrame(filled, index=df.index), df[noncanonical]], axis=1)
 
 
 def _resolve_compression(compression: PANDAS_COMPRESSION_TYPE) -> PANDAS_COMPRESSION_TYPE:
@@ -160,8 +174,13 @@ def _to_bed(
     compression: PANDAS_COMPRESSION_TYPE = "infer",
     *,
     keep: bool = True,
+    tabix: bool = False,
 ) -> str | None:
     df = _bed(self, keep=keep)
+
+    if tabix:
+        _to_bed_tabix(df, path, compression)
+        return None
 
     return df.to_csv(
         path,
@@ -172,6 +191,26 @@ def _to_bed(
         sep="\t",
         quoting=csv.QUOTE_NONE,
     )
+
+
+def _to_bed_tabix(df: DataFrame, path: str | Path | None, compression: PANDAS_COMPRESSION_TYPE) -> None:
+    """Write `df` sorted and BGZF-compressed to `path`, and index it with tabix beside it."""
+    if path is None or not str(path).endswith((".gz", ".bgz")) or compression not in ("infer", "gzip", None):
+        msg = "tabix=True writes a bgzip-compressed file: give a path ending in .gz or .bgz, and no other compression."
+        raise ValueError(msg)
+    try:
+        import pysam  # type: ignore[import]
+    except ImportError:
+        msg = "pysam must be installed to write a tabix-indexed BED file. Use `pip install pysam`."
+        raise ImportError(msg) from None
+
+    # tabix needs each chromosome contiguous and sorted by start.
+    text = df.sort_values([CHROM_COL, START_COL, END_COL], kind="stable").to_csv(
+        index=False, header=False, sep="\t", quoting=csv.QUOTE_NONE
+    )
+    with pysam.BGZFile(str(path), "wb", index=None) as fh:
+        fh.write(text.encode())
+    pysam.tabix_index(str(path), preset="bed", force=True)
 
 
 def _merged_runs(rles: "RleDict") -> "RleDict":
@@ -264,29 +303,19 @@ def _to_bigwig(
     return None
 
 
-class AttributeFormatter(Protocol):
-    def __call__(self, colname: str, col: "pd.Series[str]") -> "pd.Series[str]":
-        """Stub to properly annotate forced named args (..., *, ...)."""
-        ...
-
-
 def _pyranges_to_gtf_like(
     df: pd.DataFrame,
     out_format: Literal["gtf", "gff3"],
     map_cols: dict | None = None,
 ) -> pd.DataFrame:
-    attribute_formatter: AttributeFormatter
-
     if out_format == "gtf":
         all_columns = _ordered_gtf_columns[:-1]
         # first: gff column to pyranges column
         rename_columns = GTF_COLUMNS_TO_PYRANGES.copy()
-        attribute_formatter = gtf_formatter
     elif out_format == "gff3":
         all_columns = _ordered_gff3_columns[:-1]
         # first: gff column to pyranges column
         rename_columns = GFF3_COLUMNS_TO_PYRANGES.copy()
-        attribute_formatter = gff3_formatter
     else:
         msg = f"Invalid output format: {out_format}. Must be one of 'gtf' or 'gff3'."
         raise ValueError(msg)
@@ -313,46 +342,26 @@ def _pyranges_to_gtf_like(
     if "attribute" not in map_cols:
         _rest = set(df.columns) - set(all_columns)
         rest = sorted(_rest, key=columns.index)
-        rest_df = df[rest].copy()
-        # putting all remaining columns into the attribute column
-        for colname in rest_df.columns:
-            col = pd.Series(rest_df[colname])
-            isnull = col.isna()
-            new_val = attribute_formatter(colname, col)  # type: ignore[call-arg]
-
-            # not working to convert cat to str:  rest_df.loc[:, colname] = rest_df[colname].astype(str)
-            # so doing this instead:
-            rest_df[colname] = rest_df[colname].astype(str)
-            rest_df.loc[~isnull, colname] = new_val
-            rest_df.loc[isnull, colname] = ""
-
-        attribute = merge_attributes(rest_df, out_format)
-        outdf.insert(outdf.shape[1], column="attribute", value=attribute)
+        outdf.insert(outdf.shape[1], column="attribute", value=_attribute_column(df[rest], out_format))
     else:
         outdf.insert(outdf.shape[1], column="attribute", value=df["attribute"].copy())
 
     return outdf
 
 
-def gtf_formatter(colname: str, col: "pd.Series[str]") -> "pd.Series[str]":
-    """Format a column as a GTF attribute column."""
-    attribute_template_string = f'{colname} "{{col}}"; '
-    return col.apply(lambda x: attribute_template_string.format(col=x))
+def _attribute_column(rest_df: pd.DataFrame, out_format: Literal["gtf", "gff3"]) -> "pd.Series[str]":
+    """Build the GTF/GFF3 attribute column from the remaining columns, leaving out missing values.
 
-
-def gff3_formatter(colname: str, col: "pd.Series[str]") -> "pd.Series[str]":
-    """Format a column as a GFF3 attribute column."""
-    attribute_template_string = f"{colname}={{col}};"
-    return col.apply(lambda x: attribute_template_string.format(col=x))
-
-
-def merge_attributes(attributes: pd.DataFrame, out_format: Literal["gtf", "gff3"]) -> "pd.Series[str]":
-    """Merge attributes into a single column.
-
-    The final column in gtf/gff is not separated by tabs, but by other separators.
+    Whole columns at a time. Each value is written as its column's dtype prints it, so
+    a nullable integer is "1", not "1.0".
     """
-    regex_to_remove = " $" if out_format == "gtf" else ";$"
-    return attributes.apply(lambda r: "".join([v for v in r if v]), axis=1).str.replace(regex_to_remove, "", regex=True)
+    attribute = pd.Series("", index=rest_df.index, dtype=object)
+    for name in rest_df.columns:
+        column = rest_df[name]
+        text = column.astype(str)
+        entry = (f'{name} "' + text + '"; ') if out_format == "gtf" else (f"{name}=" + text + ";")
+        attribute = attribute + entry.where(column.notna(), "")
+    return attribute.str.replace(" $" if out_format == "gtf" else ";$", "", regex=True)
 
 
 # ── narrowPeak / pairs / bigBed writers (companions to the readers) ─────────────
