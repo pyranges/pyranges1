@@ -64,7 +64,36 @@ def from_string(s: str) -> "PyRanges":
     return ensure_pyranges(df)
 
 
-def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
+def _read_bed_region(path: Path, region: str, columns: list[str]) -> "PyRanges":
+    """Read the records of a tabix-indexed BED file that overlap `region`."""
+    try:
+        import pysam  # type: ignore[import]
+    except ImportError:
+        msg = "pysam must be installed to read a region of a BED file. Use `pip install pysam`."
+        raise ImportError(msg) from None
+    from io import StringIO
+
+    try:
+        tabix = pysam.TabixFile(str(path))
+    except OSError:
+        msg = f"{path}: region= needs a bgzip-compressed file with a .tbi or .csi index (`tabix -p bed`)."
+        raise ValueError(msg) from None
+    with tabix:
+        try:
+            lines = list(tabix.fetch(region=_without_commas(region)))
+        except ValueError:  # a chromosome the index does not have
+            lines = []
+    if not lines:
+        return ensure_pyranges(
+            pd.DataFrame({c: pd.Series(dtype="int64") for c in columns[:3]}).astype({"Chromosome": "category"})
+        )
+    names = columns[: len(lines[0].split("\t"))]
+    df = pd.read_csv(StringIO("\n".join(lines)), sep="\t", header=None, names=names)
+    _as_sorted_categorical(df, ("Chromosome", "Strand"))
+    return ensure_pyranges(df)
+
+
+def read_bed(f: Path, /, nrows: int | None = None, *, region: str | None = None) -> "PyRanges":
     """Return bed file as PyRanges.
 
     This is a reader for files that follow the bed format. They can have from
@@ -80,6 +109,11 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
 
     nrows : Optional int, default None
         Number of rows to return.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
+        Needs a bgzip-compressed file with a tabix (.tbi or .csi) index, and pysam.
 
     Notes
     -----
@@ -127,6 +161,9 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
         "BlockSizes",
         "BlockStarts",
     ]
+    if region is not None:
+        return _read_bed_region(Path(f), region, columns)
+
     path = Path(f)
     if path.name.endswith(".gz"):
         import gzip
@@ -388,6 +425,7 @@ def read_bam(
     filter_flag: int = 1540,
     *,
     sparse: bool = True,
+    region: str | None = None,
 ) -> "PyRanges":
     """Return bam file as PyRanges.
 
@@ -411,6 +449,11 @@ def read_bam(
         Ignore reads with these flags. Default 1540, which means that either
         the read is unmapped, the read failed vendor or platfrom quality
         checks, or the read is a PCR or optical duplicate.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
+        Needs a .bai or .csi index, and pysam rather than bamread.
 
     Returns
     -------
@@ -443,6 +486,8 @@ def read_bam(
     Contains 1 chromosomes and 2 strands.
 
     """
+    if region is not None:
+        return _read_pysam_alignment(f, "rb", mapq, required_flag, filter_flag, None, sparse=sparse, region=region)
     path = Path(f)
     try:
         import bamread  # type: ignore[import]
@@ -772,13 +817,42 @@ def _gff3_frames_from_arrow(table: "pa.Table", chunksize: int) -> list[pd.DataFr
     return dfs
 
 
-def read_bigwig(f: str | Path) -> "PyRanges":
+def _without_commas(region: str) -> str:
+    """Drop the thousands separators samtools accepts in a region and pysam does not."""
+    chromosome, colon, span = region.rpartition(":")
+    return f"{chromosome}{colon}{span.replace(',', '')}" if colon else region
+
+
+def _parse_region(region: str, sizes: "Mapping[str, int]") -> tuple[str, int, int] | None:
+    """Parse a samtools-style region into (chromosome, start, end), 0-based and half-open.
+
+    ``"chr1"`` is the whole chromosome, ``"chr1:1000"`` runs from base 1000 to its
+    end, and ``"chr1:1,000-2,000"`` is bases 1000 to 2000 inclusive. None when the
+    file has no such chromosome.
+    """
+    chromosome, _, span = region.rpartition(":")
+    bounds = span.replace(",", "").split("-")
+    if not chromosome or not all(b.isdigit() for b in bounds if b) or len(bounds) > 2:  # noqa: PLR2004
+        chromosome, bounds = region, [""]
+    if chromosome not in sizes:
+        return None
+    size = sizes[chromosome]
+    start = int(bounds[0]) - 1 if bounds[0] else 0
+    end = int(bounds[1]) if len(bounds) == 2 and bounds[1] else size  # noqa: PLR2004
+    return chromosome, max(start, 0), min(end, size)
+
+
+def read_bigwig(f: str | Path, *, region: str | None = None) -> "PyRanges":
     """Read bigwig files into a PyRanges.
 
     Parameters
     ----------
     f : str
         Path to bw file.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
 
     Returns
     -------
@@ -817,6 +891,20 @@ def read_bigwig(f: str | Path) -> "PyRanges":
 
     path = Path(f)
     bw = pyBigWig.open(str(path))
+
+    if region is not None:
+        window = _parse_region(region, bw.chroms())
+        intervals = (bw.intervals(*window) or ()) if window is not None else ()
+        return ensure_pyranges(
+            pd.DataFrame(
+                {
+                    "Chromosome": pd.Categorical([window[0]] * len(intervals) if window else []),
+                    "Start": pd.Series([i[0] for i in intervals], dtype="int64"),
+                    "End": pd.Series([i[1] for i in intervals], dtype="int64"),
+                    "Value": pd.Series([i[2] for i in intervals], dtype="float64"),
+                }
+            )
+        )
 
     size = int(1e5)
     chromosomes = bw.chroms()
@@ -887,13 +975,14 @@ _BIGBED_AUTOSQL_TO_PYRANGES = {
 
 def _read_pysam_alignment(
     f: "str | Path",
-    mode: Literal["r", "rc"],
+    mode: Literal["r", "rb", "rc"],
     mapq: int,
     required_flag: int,
     filter_flag: int,
     reference_filename: "str | Path | None",
     *,
     sparse: bool,
+    region: str | None = None,
 ) -> "PyRanges":
     """Read a SAM/CRAM file via pysam into a PyRanges.
 
@@ -929,7 +1018,7 @@ def _read_pysam_alignment(
     quals: list[str | None] = []
 
     with pysam.AlignmentFile(str(f), mode, **open_kwargs) as af:
-        for read in af:
+        for read in af.fetch(region=_without_commas(region)) if region else af:
             if read.is_unmapped or read.mapping_quality < mapq:
                 continue
             if required_flag and (read.flag & required_flag) != required_flag:
@@ -980,6 +1069,7 @@ def read_sam(
     filter_flag: int = 1540,
     *,
     sparse: bool = True,
+    region: str | None = None,
 ) -> "PyRanges":
     """Return SAM file as PyRanges.
 
@@ -1003,6 +1093,10 @@ def read_sam(
         Set to False to additionally return QueryStart, QueryEnd, QuerySequence,
         Name, Cigar, Quality (more time consuming).
 
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Needs an index. Records are not clipped to it.
+
     Returns
     -------
     PyRanges
@@ -1024,7 +1118,7 @@ def read_sam(
     >>> pr.read_sam("reads.sam")  # doctest: +SKIP
 
     """
-    return _read_pysam_alignment(f, "r", mapq, required_flag, filter_flag, None, sparse=sparse)
+    return _read_pysam_alignment(f, "r", mapq, required_flag, filter_flag, None, sparse=sparse, region=region)
 
 
 def read_cram(
@@ -1036,6 +1130,7 @@ def read_cram(
     *,
     sparse: bool = True,
     reference_filename: "str | Path | None" = None,
+    region: str | None = None,
 ) -> "PyRanges":
     """Return CRAM file as PyRanges.
 
@@ -1065,6 +1160,10 @@ def read_cram(
         ``@SQ UR:`` header tag does not point to an accessible reference.
         Coordinate-only reads (``sparse=True``) can often be decoded without it.
 
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Needs an index. Records are not clipped to it.
+
     Returns
     -------
     PyRanges
@@ -1086,16 +1185,22 @@ def read_cram(
     >>> pr.read_cram("reads.cram", reference_filename="genome.fa")  # doctest: +SKIP
 
     """
-    return _read_pysam_alignment(f, "rc", mapq, required_flag, filter_flag, reference_filename, sparse=sparse)
+    return _read_pysam_alignment(
+        f, "rc", mapq, required_flag, filter_flag, reference_filename, sparse=sparse, region=region
+    )
 
 
-def read_bigbed(f: "str | Path") -> "PyRanges":
+def read_bigbed(f: "str | Path", *, region: str | None = None) -> "PyRanges":
     """Return BigBed file as PyRanges.
 
     Parameters
     ----------
     f : str or Path
         Path to BigBed (.bb) file.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
 
     Returns
     -------
@@ -1140,9 +1245,15 @@ def read_bigbed(f: "str | Path") -> "PyRanges":
         if (m := re.match(r"\s*[A-Za-z_]\w*(?:\[[^\]]*\])?\s+`?(\w+)`?\s*;", line))
     ]
 
+    if region is None:
+        windows = [(chrom, 0, chrom_len) for chrom, chrom_len in bb.chroms().items()]
+    else:
+        window = _parse_region(region, bb.chroms())
+        windows = [window] if window is not None else []
+
     rows: list[tuple] = []
-    for chrom, chrom_len in bb.chroms().items():
-        entries = bb.entries(chrom, 0, chrom_len)
+    for chrom, lo, hi in windows:
+        entries = bb.entries(chrom, lo, hi)
         if entries:
             rows.extend((chrom, beg, end, rest) for beg, end, rest in entries)
 
