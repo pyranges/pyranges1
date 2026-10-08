@@ -205,6 +205,27 @@ class PyRanges(RangeFrame):
     def _constructor(self) -> type:
         return pr.PyRanges
 
+    @classmethod
+    def from_arrow(cls, data: object) -> "PyRanges | pd.DataFrame":  # type: ignore[override]
+        """Create a PyRanges from an Arrow table, or anything that exports one (polars, DuckDB, ...).
+
+        As pandas.DataFrame.from_arrow, but the result is a PyRanges when it has the
+        Chromosome, Start and End columns, as the constructor's is.
+
+        Examples
+        --------
+        >>> import pyarrow as pa
+        >>> table = pa.table({"Chromosome": ["chr1"], "Start": [10], "End": [20]})
+        >>> type(pr.PyRanges.from_arrow(table)).__name__
+        'PyRanges'
+
+        """
+        if hasattr(pd.DataFrame, "from_arrow"):  # pandas >= 3
+            return cls(pd.DataFrame.from_arrow(data))  # type: ignore[attr-defined]
+        import pyarrow as pa
+
+        return cls(pa.table(data).to_pandas())
+
     def groupby(self, *args, **kwargs) -> "PyRangesDataFrameGroupBy":
         """Groupby PyRanges."""
         index_of_observed_in_args_list = 7
