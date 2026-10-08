@@ -41,8 +41,12 @@ dependencies = ["pandas", "tabulate", "natsort", "ruranges>=0.1.8", "gtfreader>=
 # can be installed without the heavier add-ons, and included in add-ons so that
 # `pyranges1[add-ons]` and `pyranges1[all]` both get it.
 fast-io = ["pyarrow"]
+# Readers take http(s) and ftp URLs as they are; fsspec adds s3://, gs://, az:// and
+# other filesystems, each with its own package (s3fs, gcsfs, adlfs, ...).
+remote = ["fsspec"]
 add-ons = [
     "pyranges1[fast-io]",
+    "pyranges1[remote]",
     "pyrle >= 0.0.43",
     "bamread",
     "pysam",
@@ -119,6 +123,7 @@ deps =
     # (bigBed), and pyarrow (Parquet), which is listed below for the readers.
     pysam
     pybigtools
+    fsspec
     tox
     ruff == 0.14.1
     pandas-stubs<3
