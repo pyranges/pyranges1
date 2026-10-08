@@ -1494,6 +1494,22 @@ _NARROWPEAK_COLUMNS = [
 ]
 
 
+_BROADPEAK_COLUMNS = _NARROWPEAK_COLUMNS[:-1]
+
+_GAPPEDPEAK_COLUMNS = [
+    *_NARROWPEAK_COLUMNS[:6],
+    "ThickStart",
+    "ThickEnd",
+    "ItemRGB",
+    "BlockCount",
+    "BlockSizes",
+    "BlockStarts",
+    "SignalValue",
+    "PValue",
+    "QValue",
+]
+
+
 def read_narrowPeak(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":  # noqa: N802
     r"""Return ENCODE narrowPeak (BED6+4) file as PyRanges.
 
@@ -1535,16 +1551,124 @@ def read_narrowPeak(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":
     ([5.5], [50])
 
     """
+    return _read_peaks(f, _NARROWPEAK_COLUMNS, nrows, "narrowPeak")
+
+
+def _read_peaks(f: "str | Path", columns: list[str], nrows: int | None, kind: str) -> "PyRanges":
+    """Read an ENCODE peak file (narrowPeak, broadPeak, gappedPeak) with these columns.
+
+    Leading track, browser and comment lines are skipped. A file with another number
+    of fields is refused, rather than read with its columns shifted.
+    """
+    import gzip
+
+    path = Path(f)
+    with path.open("rb") as fh:
+        compressed = fh.read(2) == b"\x1f\x8b"
+    skip, fields = 0, len(columns)
+    with gzip.open(path, "rt") if compressed else path.open() as fh:
+        for skip, line in enumerate(fh):  # noqa: B007
+            if line.strip() and not line.startswith(("track", "browser", "#")):
+                fields = len(line.rstrip("\n").split("\t"))
+                break
+    if fields != len(columns):
+        msg = f"A {kind} file has {len(columns)} tab-separated fields; {path} has {fields}."
+        raise ValueError(msg)
     df = pd.read_csv(
-        Path(f),
+        path,
         sep="\t",
         header=None,
-        names=_NARROWPEAK_COLUMNS,
+        names=columns,
         nrows=nrows,
+        skiprows=skip,
         comment="#",
+        compression="gzip" if compressed else "infer",
         dtype={"Chromosome": "category", "Strand": "category"},
     )
     return ensure_pyranges(df)
+
+
+def read_broadPeak(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":  # noqa: N802
+    r"""Return ENCODE broadPeak (BED6+3) file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to broadPeak file (may be gzip-compressed).
+
+    nrows : int, default None
+        Number of rows to read. Default None (all).
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    Columns: Chromosome, Start, End, Name, Score, Strand, SignalValue, PValue, QValue:
+    narrowPeak without the summit, as MACS2/MACS3 write broad peaks. Leading track,
+    browser and ``#`` lines are skipped.
+
+    See Also
+    --------
+    pyranges1.read_narrowPeak : read a narrowPeak file
+    pyranges1.read_gappedPeak : read a gappedPeak file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".broadPeak")
+    >>> _ = tmp.write("chr1\t100\t900\tbroad1\t500\t.\t2.5\t6.1\t4.0\n")
+    >>> tmp.flush()
+    >>> gr = pr.read_broadPeak(tmp.name)
+    >>> list(gr.columns)
+    ['Chromosome', 'Start', 'End', 'Name', 'Score', 'Strand', 'SignalValue', 'PValue', 'QValue']
+    >>> gr["SignalValue"].tolist()
+    [2.5]
+
+    """
+    return _read_peaks(f, _BROADPEAK_COLUMNS, nrows, "broadPeak")
+
+
+def read_gappedPeak(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":  # noqa: N802
+    r"""Return ENCODE gappedPeak (BED12+3) file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to gappedPeak file (may be gzip-compressed).
+
+    nrows : int, default None
+        Number of rows to read. Default None (all).
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    Columns: the twelve BED columns (Chromosome ... BlockStarts), then SignalValue,
+    PValue, QValue. Each row is a broad peak with its narrow peaks as blocks, as MACS2
+    writes them with --broad. Leading track, browser and ``#`` lines are skipped.
+
+    See Also
+    --------
+    pyranges1.read_broadPeak : read a broadPeak file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".gappedPeak")
+    >>> _ = tmp.write("chr1\t100\t500\tg1\t0\t+\t100\t500\t0\t2\t50,60,\t0,340,\t1.2\t3.0\t4.0\n")
+    >>> tmp.flush()
+    >>> gr = pr.read_gappedPeak(tmp.name)
+    >>> gr["BlockCount"].tolist(), gr["BlockSizes"].tolist(), gr["BlockStarts"].tolist(), gr["QValue"].tolist()
+    ([2], ['50,60,'], ['0,340,'], [4.0])
+
+    """
+    return _read_peaks(f, _GAPPEDPEAK_COLUMNS, nrows, "gappedPeak")
 
 
 def read_parquet(
