@@ -3,7 +3,7 @@
 # a ext/foobar.py file in pyranges1/ which contains the actual code for methods etc
 # a foobar.py file in pyranges1/ which just imports the minimal objects to be exposed
 
-from pyranges1 import orfs, seqs, stats  # noqa: F401
+from pyranges1 import genes, orfs, seqs, stats  # noqa: F401
 from pyranges1.core.assistant import assistant  # noqa: F401
 from pyranges1.core.example_data import example_data  # noqa: F401
 from pyranges1.core.multioverlap import count_overlaps  # noqa: F401

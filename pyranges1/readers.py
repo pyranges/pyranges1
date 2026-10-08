@@ -494,6 +494,9 @@ def read_gtf(
 
     duplicate_attr : bool, default False
         Whether to handle (potential) duplicate attributes or just keep last one.
+        Repeated attributes are joined with commas. GENCODE gives most rows several
+        "tag" attributes, so pass True to keep e.g. Ensembl_canonical and MANE_Select
+        (see pyranges1.genes.select_transcripts).
 
     ignore_bad : bool, default False
         Whether to ignore bad lines or raise an error.
