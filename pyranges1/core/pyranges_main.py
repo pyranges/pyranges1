@@ -2078,7 +2078,9 @@ class PyRanges(RangeFrame):
             If provided, only intervals with an equal value in column(s) `match_by` may be considered as overlapping.
 
         slack : int, default 0
-            Allow this many nucleotides between each interval to merge.
+            Length by which the criteria of overlap are loosened.
+            A value of 1 merges also bookended intervals.
+            Higher slack values merge more distant intervals (with a maximum distance of slack-1 between them).
 
         Returns
         -------
