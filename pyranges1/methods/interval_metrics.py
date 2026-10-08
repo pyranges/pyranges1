@@ -19,7 +19,7 @@ VALID_METRICS: set[str] = {
     "jaccard",  # overlap / union length
     "distance",  # unsigned gap distance
     "overlap",  # boolean flag
-    "signed_distance",  # negative = upstream, positive = downstream
+    "signed_distance",  # negative = second interval to the left, positive = to the right (strand ignored)
     "midpoint_distance",  # absolute distance between midpoints
     "symmetric_coverage",  # 2 * overlap / (len1 + len2)
     "relative_direction",  # same / opposite / unknown (strand aware)

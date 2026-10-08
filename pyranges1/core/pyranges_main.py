@@ -4,7 +4,7 @@ import logging
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, Literal, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -2160,6 +2160,7 @@ class PyRanges(RangeFrame):
         dist_col: str | None = "Distance",
         ties: VALID_TIES_TYPE = "all",
         preserve_input_order: bool = True,
+        signed: Literal[False, "self", "other"] = False,
     ) -> "PyRanges":
         """Find closest interval.
 
@@ -2175,7 +2176,7 @@ class PyRanges(RangeFrame):
             information. The default, "auto", means use "same" if both PyRanges are stranded (see .strand_valid)
             otherwise ignore the strand information.
 
-        exclude_overlaps : bool, default True
+        exclude_overlaps : bool, default False
             Whether to not report intervals of others that overlap with self as the nearest ones.
 
         direction : {"any", "upstream", "downstream"}, default "any", i.e. both directions
@@ -2191,7 +2192,9 @@ class PyRanges(RangeFrame):
             Suffix to give columns with shared name in other.
 
         dist_col : str or None
-            Optional column to store the distance in.
+            Optional column to store the distance in: 0 when the intervals overlap, otherwise
+            max(a.Start, b.Start) - min(a.End, b.End) + 1, so bookended intervals are at distance 1,
+            as bedtools closest -d reports. That is the smallest slack at which overlap would pair them.
 
         ties : {"all", "first"}, default "all"
             What to report when several intervals of `other` sit at the same distance.
@@ -2208,6 +2211,13 @@ class PyRanges(RangeFrame):
 
             If False, rows may be returned in algorithm/output order instead, which can
             be faster for large results.
+
+        signed : {False, "self", "other"}, default False
+            Give the distance a sign, as bedtools closest -D a / -D b does: negative upstream,
+            positive downstream, 0 overlapping. "self" follows each interval's strand (its
+            match lies upstream); "other" follows the match's strand (the interval lies
+            upstream of its match, e.g. a peak upstream of a gene). Unstranded intervals
+            count as "+". Needs dist_col.
 
         Returns
         -------
@@ -2352,7 +2362,39 @@ class PyRanges(RangeFrame):
         PyRanges with 2 rows, 9 columns, and 1 index columns.
         Contains 1 chromosomes and 1 strands.
 
+
+        With signed="other", the sign says where each interval lies relative to its match's
+        5' end: a peak 1 kb before a "+" gene, and one 1 kb after the end of a "-" gene, are
+        both upstream:
+
+        >>> genes = pr.PyRanges(dict(Chromosome="chr1", Start=[5000, 20000], End=[8000, 23000], Strand=["+", "-"]))
+        >>> peaks = pr.PyRanges(dict(Chromosome="chr1", Start=[3900, 23999], End=[4000, 24100]))
+        >>> peaks.nearest_ranges(genes, signed="other")[["Start", "Start_b", "Strand_b", "Distance"]]
+           Start  Start_b Strand_b  Distance
+        0   3900     5000        +     -1001
+        1  23999    20000        -     -1000
+
         """
+        if signed:
+            if dist_col is None:
+                msg = "signed needs dist_col."
+                raise ValueError(msg)
+            from pyranges1.methods.signed_distance import _sign_distance
+
+            unsigned = self.nearest_ranges(
+                other,
+                strand_behavior,
+                direction,
+                k=k,
+                match_by=match_by,
+                suffix=suffix,
+                exclude_overlaps=exclude_overlaps,
+                dist_col=dist_col,
+                ties=ties,
+                preserve_input_order=preserve_input_order,
+            )
+            return _sign_distance(unsigned, dist_col, suffix, signed)
+
         _other, by = prepare_by_binary(self, other=other, strand_behavior=strand_behavior, match_by=match_by)
 
         if direction == NEAREST_ANY_DIRECTION:
@@ -5721,9 +5763,10 @@ class PyRanges(RangeFrame):
             Boolean flag - True if at least one base overlaps.
 
         signed_distance
-            Same as *distance* but signed:
-            negative when the second interval is upstream of the first,
-            positive when downstream, 0 when touching/overlapping.
+            Same as *distance* but signed by position, whatever the strand:
+            negative when the second interval lies left of the first (lower
+            coordinates), positive when right, 0 when touching/overlapping. For a
+            sign that follows strand, see nearest_ranges(signed=...).
 
         midpoint_distance
             Absolute distance between interval midpoints.
