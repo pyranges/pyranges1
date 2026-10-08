@@ -2176,7 +2176,7 @@ class PyRanges(RangeFrame):
             information. The default, "auto", means use "same" if both PyRanges are stranded (see .strand_valid)
             otherwise ignore the strand information.
 
-        exclude_overlaps : bool, default True
+        exclude_overlaps : bool, default False
             Whether to not report intervals of others that overlap with self as the nearest ones.
 
         direction : {"any", "upstream", "downstream"}, default "any", i.e. both directions
@@ -2192,7 +2192,9 @@ class PyRanges(RangeFrame):
             Suffix to give columns with shared name in other.
 
         dist_col : str or None
-            Optional column to store the distance in.
+            Optional column to store the distance in: 0 when the intervals overlap, otherwise
+            max(a.Start, b.Start) - min(a.End, b.End) + 1, so bookended intervals are at distance 1,
+            as bedtools closest -d reports. That is the smallest slack at which overlap would pair them.
 
         ties : {"all", "first"}, default "all"
             What to report when several intervals of `other` sit at the same distance.
