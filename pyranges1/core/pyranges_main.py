@@ -1726,7 +1726,14 @@ class PyRanges(RangeFrame):
         )
 
     def map_to_local(
-        self, ref, ref_on, *, match_by: VALID_BY_TYPES = None, keep_chrom: bool = False, keep_loc: bool = False
+        self,
+        ref,
+        ref_on,
+        *,
+        match_by: VALID_BY_TYPES = None,
+        keep_chrom: bool = False,
+        keep_loc: bool = False,
+        split_at_junctions: bool = True,
     ) -> "PyRanges":
         """Map *global* genomic intervals (``self``) onto a *local* frame defined by reference ranges ``ref``.
 
@@ -1762,6 +1769,11 @@ class PyRanges(RangeFrame):
             If True, keep the global Chromosome column in the output.
         keep_loc : bool, default False
             If True, keep the original global location columns (Start, End, Strand) in the output.
+        split_at_junctions : bool, default True
+            If True, an interval spanning exon junctions gives one row per exon it overlaps.
+            If False, one row per transcript: its pieces are adjacent in transcript
+            coordinates, so they are joined into one interval (with keep_loc, the global
+            columns span the exons it overlaps).
 
         Returns
         -------
@@ -1772,8 +1784,8 @@ class PyRanges(RangeFrame):
         Warning
         -------
         *A single ``self``  interval may overlap several ``ref`` exons, or different transcripts.
-        In that case its index repeats in the output.  Call ``reset_index()`` afterwards if you
-        need unique indices.
+        In that case its index repeats in the output (with ``split_at_junctions=False``, only
+        across transcripts).  Call ``reset_index()`` afterwards if you need unique indices.
 
         Examples
         --------
@@ -1845,6 +1857,20 @@ class PyRanges(RangeFrame):
         PyRanges with 2 rows, 5 columns, and 1 index columns (with 1 index duplicates).
         Contains 1 chromosomes and 1 strands.
 
+        or kept whole in transcript coordinates, also on a minus-strand transcript:
+
+        >>> g2b = pr.PyRanges(pd.DataFrame({
+        ...     "Chromosome":["chr1", "chr1"], "Start":[180, 1040], "End":[330, 1110],
+        ...     "Strand":["+", "-"], "label":["q", "r"]}))
+        >>> g2b.map_to_local(tr, "transcript_id", split_at_junctions=False)
+          index  |    Chromosome      Start      End  Strand    label
+          int64  |    str             int64    int64  str       str
+        -------  ---  ------------  -------  -------  --------  -------
+              0  |    tx1                80      130  +         q
+              1  |    tx2                90      110  +         r
+        PyRanges with 2 rows, 5 columns, and 1 index columns.
+        Contains 2 chromosomes and 1 strands.
+
         Self intervals that overlaps multiple target ranges are reported as many times:
 
         >>> tr2 = pr.PyRanges(pd.DataFrame({
@@ -1911,7 +1937,15 @@ class PyRanges(RangeFrame):
             msg = "Invalid strands detected! map_to_local needs PyRanges with valid strands, or not Strand at all)."
             raise AssertionError(msg)
 
-        gr = _map_to_local(gr=self, ref=ref, ref_on=ref_on, match_by=match_by, keep_chrom=keep_chrom, keep_loc=keep_loc)
+        gr = _map_to_local(
+            gr=self,
+            ref=ref,
+            ref_on=ref_on,
+            match_by=match_by,
+            keep_chrom=keep_chrom,
+            keep_loc=keep_loc,
+            split_at_junctions=split_at_junctions,
+        )
 
         return ensure_pyranges(gr)
 

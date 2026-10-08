@@ -57,7 +57,8 @@ def _map_to_global_pandas(
 
     cols_to_drop = (
         [CHROM_COL + "_local"]
-        + ([] if keep_id else [global_on])
+        # With local_on == global_on the merge keeps one key column: the local frame's own.
+        + ([] if keep_id or local_on == global_on else [global_on])
         + ([] if keep_loc else [out_local_start, out_local_end])
     )
 
