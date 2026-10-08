@@ -45,15 +45,20 @@ add-ons = [
     "pyranges1[fast-io]",
     "pyrle >= 0.0.43",
     "bamread",
+    "pysam",
     "pyfaidx",
     "pyBigWig",
+    "pybigtools",
     "joblib",
 ] #"fisher",
 dev = [
     "tox",
     "ruff == 0.14.1",
     "pyright",
-    "pandas-stubs",
+    # Cap to the pandas-2.x stub line: unpinned, pandas-stubs resolves to the
+    # 3.0.x series (which targets pandas 3.0 and changed e.g. the Series.map /
+    # astype overloads), producing spurious pyright errors against pandas 2.x.
+    "pandas-stubs<3",
     "types-tabulate",
     "pytest-watcher",
     "pytest-xdist",
@@ -90,6 +95,10 @@ legacy_tox_ini = """
 [tox]
 envlist = py312, py313
 
+# tox-gh (installed in CI) maps the GitHub Actions matrix Python to ONE env, so each
+# job runs only its own interpreter. Without this the full envlist runs on every
+# runner and fails where the other Python isn't installed (e.g. no 3.13 on the 3.12
+# ubuntu runner -> "could not find python interpreter matching ... python3.13").
 [gh]
 python =
     3.12 = py312
@@ -105,9 +114,14 @@ deps =
     bamread
     pyBigWig
     pyfaidx
+    # optional-format readers/writers, so their doctests + tests run in CI
+    # instead of being importorskip-ped: pysam (SAM/CRAM/VCF), pybigtools
+    # (bigBed), and pyarrow (Parquet), which is listed below for the readers.
+    pysam
+    pybigtools
     tox
     ruff == 0.14.1
-    pandas-stubs
+    pandas-stubs<3
     types-tabulate
     pytest
     pyright == 1.1.406
