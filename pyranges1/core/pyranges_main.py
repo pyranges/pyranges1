@@ -5967,7 +5967,9 @@ class PyRanges(RangeFrame):
             If provided, external complement intervals will also be returned, i.e. the intervals corresponding to the
             beginning of the chromosome up to the first interval and from the last interval to the end of the chromosome.
             The dictionary should map chromosome (or group) identifiers to their total sizes. A PyRanges or pyfaidx.Fasta
-            object is also accepted since it conveniently loads chromosome lengths.
+            object is also accepted since it conveniently loads chromosome lengths. With include_first_interval=True
+            and no group_by, chromosomes in chromsizes that have no intervals are uncovered from end to end, and are
+            returned whole, after the others.
 
         Notes
         -----
@@ -6102,6 +6104,20 @@ class PyRanges(RangeFrame):
               4  |    chr1               46    10000
         PyRanges with 5 rows, 3 columns, and 1 index columns.
         Contains 1 chromosomes.
+
+        The complement of the whole genome includes the chromosomes without intervals:
+
+        >>> pr.PyRanges(dict(Chromosome=["chr1"], Start=[50], End=[60])).complement_ranges(
+        ...     chromsizes={"chr1": 1000, "chr2": 500}, include_first_interval=True
+        ... )
+          index  |    Chromosome      Start      End
+          int64  |    str             int64    int64
+        -------  ---  ------------  -------  -------
+              0  |    chr1                0       50
+              1  |    chr1               60     1000
+              2  |    chr2                0      500
+        PyRanges with 3 rows, 3 columns, and 1 index columns.
+        Contains 2 chromosomes.
 
         Bookended intervals (indices 0-1 below) and overlapping intervals (2-3) won't return any in-between intervals:
 

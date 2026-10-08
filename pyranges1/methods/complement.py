@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
-from pyranges1.core.names import CHROM_COL, END_COL, START_COL
+from pyranges1.core.names import CHROM_COL, END_COL, START_COL, STRAND_COL
 from pyranges1.core.pyranges_helpers import ensure_rangeframe
 
 if TYPE_CHECKING:
@@ -25,8 +25,19 @@ def _complement(
 
     from pyranges1.range_frame.range_frame import RangeFrame
 
+    if chromsizes and chromsizes_col:
+        missing = sorted({*df[chromsizes_col].astype(object)} - set(chromsizes), key=str)
+        if missing:
+            msg = f"chromsizes has no size for {missing}."
+            raise ValueError(msg)
+
+    # The complement of the whole genome also contains every chromosome the
+    # intervals leave untouched.
+    whole_genome = bool(chromsizes) and include_first_interval and chromsizes_col == CHROM_COL
+    whole_genome = whole_genome and set(by) <= {CHROM_COL, STRAND_COL}
+
     if df.empty:
-        return df
+        return _with_uncovered_chromosomes(df, df, by, chromsizes) if whole_genome and chromsizes else df
 
     if include_first_interval:
         below_origin = int((df[START_COL].to_numpy(copy=False) < 0).sum())
@@ -90,4 +101,34 @@ def _complement(
 
     result = RangeFrame({CHROM_COL: chrs, START_COL: start, END_COL: end} | {_by: ids[_by] for _by in by})[col_order]
 
+    if whole_genome and chromsizes:
+        result = _with_uncovered_chromosomes(result, df, by, chromsizes)
+
     return ensure_rangeframe(result.reset_index(drop=True))
+
+
+def _with_uncovered_chromosomes(
+    result: "RangeFrame",
+    df: "RangeFrame",
+    by: list[str],
+    chromsizes: "dict[str | int, int]",
+) -> "RangeFrame":
+    """Append [0, size) for each chromosome in chromsizes that df has no interval on.
+
+    With strands, a chromosome is uncovered on each strand the intervals use but
+    do not reach it on.
+    """
+    from pyranges1.range_frame.range_frame import RangeFrame
+
+    strands = list(dict.fromkeys(df[STRAND_COL])) if STRAND_COL in by else [None]
+    present = set(df[by].astype(object).itertuples(index=False, name=None))
+    rows = [
+        {CHROM_COL: chromosome, START_COL: 0, END_COL: size} | ({} if strand is None else {STRAND_COL: strand})
+        for chromosome, size in chromsizes.items()
+        for strand in strands
+        if ((chromosome,) if strand is None else (chromosome, strand)) not in present
+    ]
+    if not rows:
+        return result
+    uncovered = pd.DataFrame(rows).astype({START_COL: result[START_COL].dtype, END_COL: result[END_COL].dtype})
+    return RangeFrame(pd.concat([result, uncovered[list(result.columns)]], ignore_index=True))
