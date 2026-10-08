@@ -5964,8 +5964,9 @@ class PyRanges(RangeFrame):
             The column name used to match keys in the ``chromsizes`` mapping. This determines the total size
             of each chromosome (or group) when calculating external complement intervals.
         chromsizes : dict[str | int, int] or None, optional
-            If provided, external complement intervals will also be returned, i.e. the intervals corresponding to the
-            beginning of the chromosome up to the first interval and from the last interval to the end of the chromosome.
+            If provided, the external complement interval from the last interval to the end of the chromosome (or
+            group) is also returned. The one from the start of the chromosome up to the first interval is returned
+            only with include_first_interval=True.
             The dictionary should map chromosome (or group) identifiers to their total sizes. A PyRanges or pyfaidx.Fasta
             object is also accepted since it conveniently loads chromosome lengths. With include_first_interval=True
             and no group_by, chromosomes in chromsizes that have no intervals are uncovered from end to end, and are
