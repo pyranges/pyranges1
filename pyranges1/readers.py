@@ -128,26 +128,24 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
         "BlockStarts",
     ]
     path = Path(f)
-    if path.name.endswith(".gz"):
-        import gzip
-
-        first_start = gzip.open(path).readline().decode().split()[1]  # noqa: SIM115
-    else:
-        first_start = path.open().readline().split()[1]
+    skip, first_fields, compressed = _bed_preamble(path)
 
     header = None
 
     try:
-        int(first_start)
+        int(first_fields[1])
     except ValueError:
         header = 0
 
-    ncols = pd.read_table(path, nrows=2).shape[1]
+    ncols = len(first_fields)
     names = columns[:ncols] if header != 0 else None
 
     # `nrows` stays on the pandas path: pyarrow.csv has no row limit, so reading
     # the whole file to throw most of it away would be slower, not faster.
-    df = None if nrows is not None else _read_bed_pyarrow(path, names=names, header=header)
+    # pyarrow recognises gzip by a .gz suffix only, so other compressed files
+    # (.bgz) go to pandas, which is told.
+    fast = nrows is None and not (compressed and not path.name.endswith(".gz"))
+    df = _read_bed_pyarrow(path, names=names, header=header, skip_rows=skip) if fast else None
     if df is None:
         df = pd.read_csv(
             path,
@@ -156,6 +154,8 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
             header=header,
             names=names,
             sep="\t",
+            skiprows=skip,
+            compression="gzip" if compressed else "infer",
         )
 
     df.columns = pd.Index(columns[: df.shape[1]])
@@ -166,6 +166,24 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
     _as_sorted_categorical(df, ("Chromosome", "Strand"))
 
     return ensure_pyranges(df)
+
+
+def _bed_preamble(path: Path) -> tuple[int, list[str], bool]:
+    """Lines to skip before the data, the first data line's fields, and whether it is gzip-compressed.
+
+    UCSC files can open with ``track`` and ``browser`` lines, and any file with
+    ``#`` comments; they are skipped, as are blank lines. Compression is told by
+    the gzip magic bytes rather than the suffix, so ``.bgz`` files read too.
+    """
+    import gzip
+
+    with path.open("rb") as fh:
+        compressed = fh.read(2) == b"\x1f\x8b"
+    with gzip.open(path, "rt") if compressed else path.open() as fh:
+        for skip, line in enumerate(fh):
+            if line.strip() and not line.startswith(("track", "browser", "#")):
+                return skip, line.rstrip("\n").split("\t"), compressed
+    return 0, [], compressed
 
 
 def _pyarrow_csv() -> "tuple | None":
@@ -275,6 +293,7 @@ def _arrow_read_csv(
     dictionary_columns: "tuple[str, ...]" = (),
     integer_columns: "tuple[str, ...]" = (),
     skip_comment_lines: bool = False,
+    skip_rows: int = 0,
 ) -> "pa.Table | None":
     """Parse a tab-separated file with `pyarrow.csv`, or return None for pandas.
 
@@ -309,10 +328,10 @@ def _arrow_read_csv(
         **({"invalid_row_handler": _skip_comment_rows} if skip_comment_lines else {}),
     )
     read_options = (
-        pacsv.ReadOptions(column_names=column_names, use_threads=True)
+        pacsv.ReadOptions(column_names=column_names, use_threads=True, skip_rows=skip_rows)
         if column_names is not None
         # The file names its own columns; let pyarrow read them.
-        else pacsv.ReadOptions(use_threads=True)
+        else pacsv.ReadOptions(use_threads=True, skip_rows=skip_rows)
     )
 
     try:
@@ -368,6 +387,7 @@ def _read_bed_pyarrow(
     *,
     names: list[str] | None,
     header: int | None,
+    skip_rows: int = 0,
 ) -> "pd.DataFrame | None":
     """Read a BED file with `pyarrow.csv`, or return None to use pandas."""
     named = names if header != 0 and names is not None else []
@@ -376,6 +396,7 @@ def _read_bed_pyarrow(
         column_names=names if header != 0 else None,
         dictionary_columns=tuple(c for c in ("Chromosome", "Strand") if c in named),
         integer_columns=tuple(c for c in ("Start", "End") if c in named),
+        skip_rows=skip_rows,
     )
     return None if table is None else _arrow_to_pandas(table)
 
@@ -660,6 +681,49 @@ def to_keys_and_values(line: str) -> dict[str, str]:
     return dict(it.split("=", 1) for it in line.rstrip("; ").split(";") if "=" in it)
 
 
+def read_gff(f: str | Path, /, *, nrows: int | None = None) -> "PyRanges":
+    """Read a GFF file, as GFF3 or as GTF/GFF2 depending on its content.
+
+    A ``##gff-version 3`` line, or ``key=value`` attributes on the first record,
+    mean GFF3, read with `read_gff3`; ``key "value"`` attributes mean GTF, read
+    with `read_gtf`.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to the GFF file, optionally gzip-compressed.
+
+    nrows : int, default None
+        Number of rows to read. Default None, i.e. all.
+
+    Returns
+    -------
+    PyRanges
+
+    See Also
+    --------
+    pyranges1.read_gff3 : read GFF3 files
+    pyranges1.read_gtf : read GTF files
+
+    """
+    import gzip
+
+    path = Path(f)
+    with path.open("rb") as fh:
+        compressed = fh.read(2) == b"\x1f\x8b"
+    gff3 = False
+    with gzip.open(path, "rt") if compressed else path.open() as fh:
+        for line in fh:
+            if line.startswith("##gff-version"):
+                gff3 = line.split()[1:2] == ["3"]
+                break
+            if line.strip() and not line.startswith("#"):
+                attributes = line.rstrip("\n").split("\t")[8:9]
+                gff3 = bool(attributes) and "=" in attributes[0] and '"' not in attributes[0]
+                break
+    return read_gff3(path, nrows=nrows) if gff3 else read_gtf(path, nrows=nrows)
+
+
 def read_gff3(
     f: str | Path,
     nrows: int | None = None,
@@ -719,6 +783,11 @@ def read_gff3(
     if table is not None:
         dfs = _gff3_frames_from_arrow(table, chunksize)
     else:
+        # Records end where a ##FASTA section begins; its sequence lines are not
+        # features. (They also send the pyarrow path here.)
+        fasta_at = _gff3_records_before_fasta(path)
+        if fasta_at is not None:
+            nrows = fasta_at if nrows is None else min(nrows, fasta_at)
         df_iter = pd.read_csv(
             path,
             comment="#",
@@ -750,6 +819,35 @@ def read_gff3(
     _as_sorted_categorical(df, tuple(dtypes))
 
     return ensure_pyranges(df)
+
+
+def _gff3_records_before_fasta(path: Path) -> int | None:
+    """Count the records before a ``##FASTA`` line; None when there is none.
+
+    Most GFF3 files have no FASTA section, and a byte search says so without
+    parsing lines; only a file that has one is read line by line.
+    """
+    import gzip
+
+    with path.open("rb") as fh:
+        compressed = fh.read(2) == b"\x1f\x8b"
+    opener = gzip.open if compressed else open
+    with opener(path, "rb") as fh:
+        tail = b""
+        while chunk := fh.read(1 << 24):
+            if b"##FASTA" in tail + chunk:
+                break
+            tail = chunk[-6:]
+        else:
+            return None
+    records = 0
+    with opener(path, "rb") as fh:
+        for line in fh:
+            if line.startswith(b"##FASTA"):
+                return records
+            if line.strip() and not line.startswith(b"#"):
+                records += 1
+    return None
 
 
 def _gff3_frames_from_arrow(table: "pa.Table", chunksize: int) -> list[pd.DataFrame]:
