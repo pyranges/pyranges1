@@ -880,6 +880,60 @@ class PyRanges(RangeFrame):
         return _self
 
     # to do: optimize, doesn't need to split by chromosome, only strand and only if ext_3/5
+    def explode_blocks(
+        self,
+        *,
+        block_index_col: str | None = "BlockIndex",
+        use_strand: VALID_USE_STRAND_TYPE = "auto",
+        drop_block_columns: bool = True,
+    ) -> "PyRanges":
+        """Split BED12 intervals into one row per block (e.g. a transcript into its exons).
+
+        Each block becomes a row with its own Start and End; every other column is kept,
+        and the index is repeated. As bedtools bed12tobed6.
+
+        Parameters
+        ----------
+        block_index_col : str or None, default "BlockIndex"
+            Column numbering the blocks of each interval from 0; None leaves it out.
+
+        use_strand : {"auto", True, False}, default "auto"
+            Number blocks from the 5' end, so the last block of a "-" interval is block 0.
+            The default "auto" means True if PyRanges has valid strands (see .strand_valid).
+
+        drop_block_columns : bool, default True
+            Drop BlockCount, BlockSizes and BlockStarts, which no longer describe the rows.
+
+        Returns
+        -------
+        PyRanges
+
+        Examples
+        --------
+        >>> tx = pr.PyRanges({"Chromosome": ["chr1", "chr1"], "Start": [100, 500], "End": [200, 650],
+        ...     "Name": ["t1", "t2"], "Strand": ["+", "-"], "BlockCount": [2, 2],
+        ...     "BlockSizes": ["20,30,", "50,40,"], "BlockStarts": ["0,70,", "0,110,"]})
+        >>> tx.explode_blocks()
+          index  |    Chromosome      Start      End  Name    Strand      BlockIndex
+          int64  |    str             int64    int64  str     str              int64
+        -------  ---  ------------  -------  -------  ------  --------  ------------
+              0  |    chr1              100      120  t1      +                    0
+              0  |    chr1              170      200  t1      +                    1
+              1  |    chr1              500      550  t2      -                    1
+              1  |    chr1              610      650  t2      -                    0
+        PyRanges with 4 rows, 6 columns, and 1 index columns (with 2 index duplicates).
+        Contains 1 chromosomes and 2 strands.
+
+        """
+        from pyranges1.methods.blocks import _explode_blocks
+
+        return _explode_blocks(
+            self,
+            block_index_col=block_index_col,
+            use_strand=validate_and_convert_use_strand(self, use_strand),
+            drop_block_columns=drop_block_columns,
+        )
+
     def extend_ranges(
         self,
         ext: int | None = None,
@@ -4207,6 +4261,34 @@ class PyRanges(RangeFrame):
         from pyranges1.core.out import _to_bigbed
 
         return _to_bigbed(self, path, chromosome_sizes, autosql)
+
+    def to_bedgraph(self, path: str | None = None, value_col: str = "Value") -> str | None:
+        r"""Write to bedGraph.
+
+        The companion reader is :func:`pyranges1.read_bedgraph`. Writes Chromosome, Start,
+        End and `value_col`; a ``.gz`` path is gzip-compressed.
+
+        Parameters
+        ----------
+        path : str, default None
+            Where to write. If None, returns the string representation.
+
+        value_col : str, default "Value"
+            The column holding the signal.
+
+        Returns
+        -------
+        str or None
+
+        Examples
+        --------
+        >>> pr.PyRanges({"Chromosome": ["chr1"], "Start": [0], "End": [10], "Value": [1.5]}).to_bedgraph()
+        'chr1\t0\t10\t1.5\n'
+
+        """
+        from pyranges1.methods.signal_formats import _to_bedgraph
+
+        return _to_bedgraph(self, path, value_col)
 
     def to_bigwig(
         self: "pr.PyRanges",
