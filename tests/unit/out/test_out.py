@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 import pyranges1 as pr
 
@@ -29,12 +30,10 @@ def test_write_gtf_no_path(chip_10) -> None:
 
 
 def test_write_bigwig(chip_10, tmp_path, chromsizes) -> None:
-    try:
-        outfile = tmp_path / "deleteme.bigwig"
-        outpath = str(outfile)
-        chip_10.to_bigwig(outpath, chromosome_sizes=chromsizes)
-    except SystemExit:
-        pass
+    pytest.importorskip("pyBigWig")
+    outfile = tmp_path / "deleteme.bigwig"
+    outpath = str(outfile)
+    chip_10.to_bigwig(outpath, chromosome_sizes=chromsizes)
 
 
 def test_to_bigwig_divide_keeps_single_run_tracks() -> None:

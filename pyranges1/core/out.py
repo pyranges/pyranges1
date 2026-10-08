@@ -218,12 +218,8 @@ def _to_bigwig(
     try:
         import pyBigWig  # type: ignore[import]
     except ModuleNotFoundError:
-        LOGGER.exception(
-            "pybigwig must be installed to create bigwigs. Use `conda install -c bioconda pybigwig` or `pip install pybigwig` to install it.",
-        )
-        import sys
-
-        sys.exit(1)
+        msg = "pybigwig must be installed to create bigwigs. Use `conda install -c bioconda pybigwig` or `pip install pybigwig` to install it."
+        raise ImportError(msg) from None
 
     if not divide:
         rles = self.to_rle(rpm=rpm, strand=False, value_col=value_col)
@@ -488,12 +484,8 @@ def _to_bigbed(
     try:
         import pybigtools  # type: ignore[import]
     except ImportError:
-        LOGGER.exception(
-            "pybigtools must be installed to write BigBed files. Use `pip install pybigtools` to install it.",
-        )
-        import sys
-
-        sys.exit(1)
+        msg = "pybigtools must be installed to write BigBed files. Use `pip install pybigtools` to install it."
+        raise ImportError(msg) from None
 
     present_bed = [c for c in _BED_EXTRA_ORDER if c in self.columns]
     extras = [c for c in self.columns if c not in (CHROM_COL, START_COL, END_COL) and c not in present_bed]
