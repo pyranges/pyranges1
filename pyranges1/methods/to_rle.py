@@ -70,10 +70,11 @@ def _to_rle(
     }  # already sparse
     kwargs.update(_kwargs)
 
-    result = {
-        k: _coverage_with_writable_arrays(v, value_col=kwargs.get("value_col"))
-        for k, v in ranges.groupby(ranges.loc_columns)
-    }
+    result = {}
+    for k, v in ranges.groupby(ranges.loc_columns):
+        # pyrle renders and indexes RleDicts with string keys.
+        key = tuple(map(str, k)) if isinstance(k, tuple) else str(k)
+        result[key] = _coverage_with_writable_arrays(v, value_col=kwargs.get("value_col"))
 
     if rpm:
         multiplier = 1e6 / len(ranges)

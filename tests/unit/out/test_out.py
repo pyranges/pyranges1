@@ -186,3 +186,31 @@ def test_to_bigwig_precomputed_validates_arguments() -> None:
             precomputed=True,
             return_data=True,
         )
+
+
+def test_to_rle_non_string_chromosome_keys() -> None:
+    """to_rle must string-ify chromosome keys so pyrle can render them (gh-114)."""
+    pytest.importorskip("pyrle")
+
+    gr = pr.PyRanges(
+        pd.DataFrame(
+            {
+                "Chromosome": [1, 2],
+                "Start": [0, 10],
+                "End": [5, 20],
+                "Strand": ["+", "-"],
+            },
+        ),
+    )
+
+    stranded = gr.to_rle()
+    assert stranded.stranded
+    assert set(stranded.keys()) == {("1", "+"), ("2", "-")}
+    rendered = str(stranded)
+    assert "1 +" in rendered
+    assert "2 -" in rendered
+
+    unstranded = gr.to_rle(strand=False)
+    assert not unstranded.stranded
+    assert set(unstranded.keys()) == {"1", "2"}
+    assert "Unstranded RleDict" in str(unstranded)
