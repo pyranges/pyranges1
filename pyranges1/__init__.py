@@ -23,6 +23,7 @@ from pyranges1.readers import (  # noqa: F401
     read_bigbed,
     read_bigwig,
     read_broadPeak,
+    read_chain,
     read_cram,
     read_gappedPeak,
     read_gff,
