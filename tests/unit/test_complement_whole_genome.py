@@ -30,3 +30,15 @@ def test_complement_names_chromosomes_missing_from_chromsizes() -> None:
     gr = pr.PyRanges({"Chromosome": ["chr1", "chr3"], "Start": [50, 5], "End": [60, 9]})
     with pytest.raises(ValueError, match="chr3"):
         gr.complement_ranges(chromsizes={"chr1": 1000}, include_first_interval=True)
+
+
+def test_whole_genome_complement_keeps_categorical_chromosomes() -> None:
+    import pandas as pd
+
+    gr = pr.PyRanges(
+        {"Chromosome": pd.Categorical(["chr1"]), "Start": [50], "End": [60], "Strand": pd.Categorical(["+"])}
+    )
+    got = gr.complement_ranges(chromsizes={"chr1": 1000, "chr2": 500}, include_first_interval=True)
+    assert isinstance(got["Chromosome"].dtype, pd.CategoricalDtype)
+    assert isinstance(got["Strand"].dtype, pd.CategoricalDtype)
+    assert got["Chromosome"].tolist() == ["chr1", "chr1", "chr2"]

@@ -131,4 +131,11 @@ def _with_uncovered_chromosomes(
     if not rows:
         return result
     uncovered = pd.DataFrame(rows).astype({START_COL: result[START_COL].dtype, END_COL: result[END_COL].dtype})
+    result = result.copy()
+    for column in (CHROM_COL, STRAND_COL):
+        # concat turns categoricals with different categories into strings; widen them first.
+        if column in uncovered and isinstance(result[column].dtype, pd.CategoricalDtype):
+            categories = list(dict.fromkeys([*result[column].cat.categories, *uncovered[column]]))
+            result[column] = result[column].cat.set_categories(categories)
+            uncovered[column] = pd.Categorical(uncovered[column], categories=categories)
     return RangeFrame(pd.concat([result, uncovered[list(result.columns)]], ignore_index=True))
