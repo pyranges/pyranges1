@@ -22,6 +22,61 @@ available at https://pyranges1.readthedocs.io/
 ## Recent Changelog
 
 ```
+# 1.5.0 (14.10.26)
+Most of this release is by Piotr Balwierz (@balwierz), and the parallel readers by Marco Mariotti (@marco-mariotti).
+
+Breaking and behaviour changes
+- **breaking, gh-204**: pyrle is no longer used: `to_rle` returns a `runlength` `RleBatch` instead of a pyrle `RleDict`, and `to_bigwig` computes its coverage with runlength. `runlength` replaces `pyrle` in the `add-ons` extra
+- **breaking, gh-185**: `stats.fdr` is now the Benjamini-Hochberg procedure. It applied p·m/rank without the running minimum, so q-values were not monotone in p and could be too large; it now matches `scipy.stats.false_discovery_control` and R's `p.adjust(method="BH")`. Missing p-values stay missing and are not counted. By @balwierz
+- **breaking, gh-184**: `to_bigwig` without `chromosome_sizes` takes each chromosome's size from the data instead of the bundled hg19 sizes, and a chromosome missing from `chromosome_sizes` raises a `ValueError` naming it. By @balwierz
+- **breaking, gh-196**: `to_narrowPeak` writes missing columns with the format's "not available" values (Score 0, -1 for SignalValue, PValue, QValue and Peak) instead of `.`, so they read back as numbers; the peak readers refuse a file with the wrong number of fields instead of shifting its columns. By @balwierz
+- **breaking, gh-183**: a missing optional dependency raises `ImportError` instead of logging and calling `sys.exit`. By @balwierz
+- **gh-191**: `complement_ranges(chromsizes=..., include_first_interval=True)` includes chromosomes without intervals, as `bedtools complement` does; a chromosome missing from `chromsizes` raises a `ValueError` naming it. By @balwierz
+- **gh-206**: a missing value in a `match_by` or `group_by` column is a group of its own, as with `groupby(dropna=False)`: it matches only other missing values on the same chromosome
+- `read_bigwig` returns `Chromosome` as `category`, like the other readers (gh-181). By @balwierz
+- `read_bedgraph`, like `read_bed`, skips `track`/`browser`/`#` lines only at the top of the file (gh-197)
+
+Performance
+- `read_bed`, `read_gtf` and `read_gff3` parse with pyarrow on every core when it is installed (the new `fast-io` extra, included in `add-ons`): `read_bed` is up to ~15x faster, `read_gtf` ~3x and `read_gff3` ~5x, with identical output. `pr.set_num_threads` sets the number of threads, and an option chooses the parser. By @marco-mariotti
+- grouping (`factorize`) codes each column with `pd.factorize` instead of a groupby: 3-6x faster on every grouped operation (gh-181). By @balwierz
+- `to_gtf` and `to_gff3` build the attribute column a whole column at a time: ~12x faster, and nullable integers print as `1`, not `1.0` (gh-194). By @balwierz
+- `gr.loci[...]` on a categorical `Chromosome` is ~17x faster (gh-195). By @balwierz
+
+New readers and writers
+- `read_sam`, `read_cram`, `read_vcf`, `read_bigbed`, `read_parquet`, `read_pairs`, `read_narrowPeak` and `read_paf`; `to_parquet`, `to_narrowPeak`, `to_pairs` and `to_bigbed` (gh-181). By @balwierz
+- `region=` on `read_bed` (tabix), `read_bigwig`, `read_bigbed`, `read_bam`, `read_sam` and `read_cram`: only the records overlapping a samtools-style region are read, through the file's index (gh-189). By @balwierz
+- the text readers and `read_parquet` read from URLs: http(s) and ftp with the standard library, s3://, gs:// and others through fsspec with `storage_options` (the new `remote` extra) (gh-190). By @balwierz
+- `read_broadPeak`/`to_broadPeak` and `read_gappedPeak`/`to_gappedPeak`; `to_narrowPeak` to a `.gz` path is gzipped, and the peak readers skip track lines (gh-196). By @balwierz
+- `read_bedgraph`, `to_bedgraph` and `read_wig` (gh-197). By @balwierz
+- `read_chain` reads UCSC chain files (gh-199). By @balwierz
+- `read_gff` reads GFF3 or GTF by content; `read_bed` skips track/browser lines and reads bgzip by content; `read_gff3` stops at `##FASTA` (gh-187). By @balwierz
+- `to_bed(tabix=True)` writes a sorted, bgzip-compressed, tabix-indexed BED (gh-194). By @balwierz
+- `from_string` reads genome browser positions (`chr1:1,000-2,000`) and headerless BED; `PyRanges.from_arrow` builds a PyRanges from Arrow, polars or DuckDB results; `pyranger` offers every reader (gh-195). By @balwierz
+
+New methods
+- `liftover_ranges`: UCSC liftOver on PyRanges, identical to `liftOver` including its unmapped reasons (gh-199). By @balwierz
+- `coverage_ranges`: depth of coverage as runs of constant depth, as `bedtools genomecov -bg` (gh-198). By @balwierz
+- `bigwig_stats`: bigWig signal summarised over each interval, or as a regions x bins matrix (gh-188). By @balwierz
+- `resize_ranges`, `promoters` and `shuffle_ranges` (gh-192). By @balwierz
+- `nearest_ranges(signed="self"|"other")`: strand-oriented distance, as `bedtools closest -D a` / `-D b` (gh-193). By @balwierz
+- `count_overlaps(calculate_coverage=True)`: the fraction of each interval covered (gh-186). By @balwierz
+- `explode_blocks`: one row per BED12 block, as `bedtools bed12tobed6` (gh-197). By @balwierz
+- `map_to_local(split_at_junctions=False)`: one interval per (interval, transcript) across exon junctions (gh-200). By @balwierz
+- `pr.genes`: `select_transcripts` (canonical, MANE or longest), `has_tag` and `label_utrs` for GTF/GFF3 annotations (gh-201). By @balwierz
+
+Fixes
+- **fix, gh-206**: a missing value in a `match_by` column could pair intervals on different chromosomes; `window_ranges(group_by=...)` windowed rows with another row's strand when sorting reordered them
+- **fix, gh-194**: `to_bed` writes BED12 fields in their positions; with `ThickEnd` but no `ThickStart`, ThickEnd was written as column 7. By @balwierz
+- **fix, gh-184**: `read_bigwig` no longer duplicates intervals that cross its internal read windows; BED3 frames write to bigBed. By @balwierz
+- **fix, gh-185**: `reverse_complement` complements the IUPAC ambiguity codes. By @balwierz
+- **fix, gh-200**: `map_to_global` with the id named alike on both sides raised `KeyError`. By @balwierz
+- **fix, gh-187**: `read_gff` passes `duplicate_attr` and `ignore_bad` on to `read_gtf`. By @balwierz
+- the `PyRanges` constructor's error lists the columns present as well as the missing ones (gh-195)
+- docs: exact definitions of every overlap operation, checked by brute-force oracle tests; `merge_overlaps`' `slack` bridges gaps of up to `slack - 1` (gh-202). By @balwierz
+
+Dependencies
+- `gtfreader>=0.3.0`; `runlength` replaces `pyrle`; new extras `fast-io` (pyarrow) and `remote` (fsspec), both in `add-ons`
+
 # 1.4.5 (21.09.26)
 - **fix**: explicitly convert the chromosome-size total used by `stats.forbes` to a Python `int`, matching the helper's return type and fixing CI type checking with current pandas stubs
 
@@ -94,6 +149,28 @@ Installation including all optional dependencies:
 ```bash
 pip install pyranges1[all]
 ```
+
+For faster file reading, install `pyarrow`. `read_bed` then parses on every
+core instead of one, which is 10-18x faster on large files and returns exactly
+the same frame:
+
+```bash
+pip install pyranges1[fast-io]   # or [add-ons], or [all]
+```
+
+Reading then runs on every core by default. To pin how many, or to go back to
+the single-threaded parser:
+
+```python
+import pyranges1 as pr
+
+pr.set_num_threads(4)                          # kernels and readers alike
+pr.options.set_option("use_pyarrow", False)    # the pandas parser, same frame
+```
+
+`set_num_threads` reaches the interval kernels too, but those read their count
+once, when the first operation runs — call it before that or they keep the
+count they started with.
 
 Details at https://pyranges1.readthedocs.io/en/latest/installation.html
 

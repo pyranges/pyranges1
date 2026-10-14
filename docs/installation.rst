@@ -21,8 +21,12 @@ To **install all optional dependencies**, use::
 
 Here you can see the optional dependencies grouped by functionality::
 
-    # user add-ons: to fetch sequences, read BAM files ...
+    # user add-ons: to fetch sequences, read BAM files, faster file reading ...
     pip install pyranges1[add-ons]
+
+    # faster file reading only: installs pyarrow, which makes read_bed
+    # 10-18x faster on large files. Included in add-ons and in all.
+    pip install pyranges1[fast-io]
 
     # command line: to use the pyranger command-line tool
     pip install pyranges1[cli]

@@ -1,16 +1,22 @@
+import itertools
 import logging
-import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import gtfreader
+import numpy as np
 import pandas as pd
 from natsort import natsorted  # type: ignore[import]
 
+from pyranges1.core.options import option_manager
 from pyranges1.core.pyranges_helpers import ensure_pyranges
+from pyranges1.core.remote import _is_url, _local_copy
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
+    from types import ModuleType
+
+    import pyarrow as pa
 
     from pyranges1.core.pyranges_main import PyRanges
 
@@ -18,9 +24,15 @@ logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
+_HASH = ord("#")
+
 
 def from_string(s: str) -> "PyRanges":
-    """Create a PyRanges from multiline string.
+    r"""Create a PyRanges from multiline string.
+
+    Three forms are understood: a whitespace-separated table with a header; positions as
+    the UCSC and IGV position boxes show them, one per line ("chr1:1,000-2,000", 1-based and
+    inclusive, optionally ":+" or ":-"); and BED lines without a header.
 
     Parameters
     ----------
@@ -49,15 +61,110 @@ def from_string(s: str) -> "PyRanges":
     PyRanges with 5 rows, 4 columns, and 1 index columns.
     Contains 4 chromosomes and 2 strands.
 
+
+    Positions copied from a genome browser:
+
+    >>> pr.from_string("chrX:24,897,376-24,899,115")
+      index  |    Chromosome       Start       End
+      int64  |    str              int64     int64
+    -------  ---  ------------  --------  --------
+          0  |    chrX          24897375  24899115
+    PyRanges with 1 rows, 3 columns, and 1 index columns.
+    Contains 1 chromosomes.
+
+    >>> pr.from_string("chr1:101-200:+\nchr2:51-60:-")
+      index  |    Chromosome      Start      End  Strand
+      int64  |    str             int64    int64  str
+    -------  ---  ------------  -------  -------  --------
+          0  |    chr1              100      200  +
+          1  |    chr2               50       60  -
+    PyRanges with 2 rows, 4 columns, and 1 index columns.
+    Contains 2 chromosomes and 2 strands.
+
+    BED lines without a header:
+
+    >>> pr.from_string("chr1\t100\t200\tpeak1\nchr2\t50\t60\tpeak2")
+      index  |    Chromosome      Start      End  Name
+      int64  |    str             int64    int64  str
+    -------  ---  ------------  -------  -------  ------
+          0  |    chr1              100      200  peak1
+          1  |    chr2               50       60  peak2
+    PyRanges with 2 rows, 4 columns, and 1 index columns.
+    Contains 2 chromosomes.
+
     """
+    import re
     from io import StringIO
+
+    # A position as genome browsers show it: chr1:1,000-2,000, optionally :+ or :-.
+    position = re.compile(r"^\s*([^\s:]+)\s*:\s*([\d,]+)\s*-\s*([\d,]+)\s*(?::\s*([+\-.]))?\s*$")
+    lines = [line for line in s.strip().splitlines() if line.strip()]
+    positions = [position.match(line) for line in lines]
+    if lines and all(positions):
+        matches = [m for m in positions if m is not None]
+        starts = [int(m.group(2).replace(",", "")) - 1 for m in matches]
+        ends = [int(m.group(3).replace(",", "")) for m in matches]
+        if any(start < 0 or end <= start for start, end in zip(starts, ends, strict=True)):
+            msg = "Positions are 1-based and inclusive: the start must be at least 1 and at most the end."
+            raise ValueError(msg)
+        df = pd.DataFrame({"Chromosome": [m.group(1) for m in matches], "Start": starts, "End": ends})
+        if any(m.group(4) for m in matches):
+            df["Strand"] = [m.group(4) or "." for m in matches]
+        return ensure_pyranges(df)
+
+    fields = re.split(r"\s+", lines[0].strip()) if lines else []
+    if len(fields) >= 3 and all(re.fullmatch(r"-?\d+", f) for f in fields[1:3]):  # noqa: PLR2004
+        from pyranges1.core.out import _BED_EXTRA_ORDER
+
+        df = pd.read_csv(StringIO(s), sep=r"\s+", header=None)
+        names = ["Chromosome", "Start", "End", *_BED_EXTRA_ORDER]
+        # Columns past BED12 (BED12+N) are named by their position.
+        names += [f"Column{i + 1}" for i in range(len(names), df.shape[1])]
+        df.columns = pd.Index(names[: df.shape[1]])
+        return ensure_pyranges(df)
 
     df = pd.read_csv(StringIO(s), sep=r"\s+", index_col=None)
 
     return ensure_pyranges(df)
 
 
-def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
+def _read_bed_region(path: "str | Path", region: str, columns: list[str]) -> "PyRanges":
+    """Read the records of a tabix-indexed BED file that overlap `region`."""
+    try:
+        import pysam  # type: ignore[import]
+    except ImportError:
+        msg = "pysam must be installed to read a region of a BED file. Use `pip install pysam`."
+        raise ImportError(msg) from None
+    from io import StringIO
+
+    try:
+        tabix = pysam.TabixFile(str(path))
+    except OSError:
+        msg = f"{path}: region= needs a bgzip-compressed file with a .tbi or .csi index (`tabix -p bed`)."
+        raise ValueError(msg) from None
+    with tabix:
+        try:
+            lines = list(tabix.fetch(region=_without_commas(region)))
+        except ValueError:  # a chromosome the index does not have
+            lines = []
+        # With nothing in the region, the file's first record gives the columns and
+        # dtypes, so an empty result has the same shape as any other.
+        first = lines[:1] or list(itertools.islice(tabix.fetch(), 1))
+    if not first:
+        return ensure_pyranges(
+            pd.DataFrame({c: pd.Series(dtype="int64") for c in columns[:3]}).astype({"Chromosome": "category"})
+        )
+    names = columns[: len(first[0].split("\t"))]
+    df = pd.read_csv(StringIO("\n".join(lines or first)), sep="\t", header=None, names=names)
+    if not lines:
+        df = df.iloc[:0]
+    _as_sorted_categorical(df, ("Chromosome", "Strand"))
+    return ensure_pyranges(df)
+
+
+def read_bed(
+    f: Path, /, nrows: int | None = None, *, region: str | None = None, storage_options: dict | None = None
+) -> "PyRanges":
     """Return bed file as PyRanges.
 
     This is a reader for files that follow the bed format. They can have from
@@ -74,10 +181,26 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
     nrows : Optional int, default None
         Number of rows to return.
 
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
+        Needs a bgzip-compressed file with a tabix (.tbi or .csi) index, and pysam.
+        With a URL, only the region is fetched; as with samtools, htslib saves a copy
+        of the remote index in the working directory.
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
+
     Notes
     -----
     If you just want to create a PyRanges from a tab-delimited bed-like file,
     use `pr.PyRanges(pandas.read_table(f))` instead.
+
+    If `pyarrow` is installed, the file is parsed on every core rather than one,
+    which is 10-18x faster on large files; the result is identical either way.
+    Install it with `pip install pyranges1[fast-io]` (also included in
+    `[add-ons]` and `[all]`).
 
     Returns
     -------
@@ -115,35 +238,286 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
         "BlockSizes",
         "BlockStarts",
     ]
-    path = Path(f)
-    if path.name.endswith(".gz"):
-        import gzip
+    # Before the URL branch: pysam reads a remote tabix file through its index
+    # instead of copying it.
+    if region is not None:
+        return _read_bed_region(str(f) if _is_url(f) else Path(f), region, columns)
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_bed(local, nrows=nrows)
 
-        first_start = gzip.open(path).readline().decode().split()[1]  # noqa: SIM115
-    else:
-        first_start = path.open().readline().split()[1]
+    path = Path(f)
+    skip, first_fields, compressed = _bed_preamble(path)
 
     header = None
 
     try:
-        int(first_start)
+        int(first_fields[1])
     except ValueError:
         header = 0
 
-    ncols = pd.read_table(path, nrows=2).shape[1]
+    ncols = len(first_fields)
+    names = columns[:ncols] if header != 0 else None
 
-    df = pd.read_csv(
-        path,
-        dtype={"Chromosome": "category", "Strand": "category"},
-        nrows=nrows,
-        header=header,
-        names=columns[:ncols] if header != 0 else None,
-        sep="\t",
-    )
+    # `nrows` stays on the pandas path: pyarrow.csv has no row limit, so reading
+    # the whole file to throw most of it away would be slower, not faster.
+    # pyarrow recognises gzip by a .gz suffix only, so other compressed files
+    # (.bgz) go to pandas, which is told.
+    fast = nrows is None and not (compressed and not path.name.endswith(".gz"))
+    df = _read_bed_pyarrow(path, names=names, header=header, skip_rows=skip) if fast else None
+    if df is None:
+        df = pd.read_csv(
+            path,
+            dtype={"Chromosome": "category", "Strand": "category"},
+            nrows=nrows,
+            header=header,
+            names=names,
+            sep="\t",
+            skiprows=skip,
+            compression="gzip" if compressed else "infer",
+        )
 
     df.columns = pd.Index(columns[: df.shape[1]])
 
+    # Whichever reader ran, the dtype contract is the same. The pyarrow path
+    # usually gets the dictionary for free by asking for it up front; this makes
+    # the guarantee hold either way.
+    _as_sorted_categorical(df, ("Chromosome", "Strand"))
+
     return ensure_pyranges(df)
+
+
+def _bed_preamble(path: Path) -> tuple[int, list[str], bool]:
+    """Lines to skip before the data, the first data line's fields, and whether it is gzip-compressed.
+
+    UCSC files can open with ``track`` and ``browser`` lines, and any file with
+    ``#`` comments; they are skipped, as are blank lines. Compression is told by
+    the gzip magic bytes rather than the suffix, so ``.bgz`` files read too.
+    """
+    import gzip
+
+    with path.open("rb") as fh:
+        compressed = fh.read(2) == b"\x1f\x8b"
+    with gzip.open(path, "rt") if compressed else path.open() as fh:
+        for skip, line in enumerate(fh):
+            if line.strip() and not line.startswith(("track", "browser", "#")):
+                return skip, line.rstrip("\n").split("\t"), compressed
+    return 0, [], compressed
+
+
+def _pyarrow_csv() -> "tuple | None":
+    """Return `(pyarrow, pyarrow.csv)`, or None when pyarrow is not installed.
+
+    Every fast path in this module goes through here, so there is exactly one
+    place to disable, and the tests that run each reader both ways patch it.
+
+    `pr.options.set_option("use_pyarrow", False)` also lands here. It is an
+    option rather than a reader argument because the readers mirror
+    polaranges', which parses through Polars and has no pyarrow to switch; a
+    `use_pyarrow=` parameter would be a pyranges1-only argument on a shared
+    signature, while options are free to differ between the two.
+    """
+    requested = option_manager.get_option("use_pyarrow")
+    if requested is False:
+        return None
+    try:
+        import pyarrow as pa
+        from pyarrow import csv as pacsv
+    except ImportError:
+        if requested:
+            msg = (
+                'pr.options.set_option("use_pyarrow", True) was set but pyarrow is '
+                "not installed. Install it with `pip install pyranges1[fast-io]`, or "
+                "set the option back to None to fall back to the pandas parser."
+            )
+            raise ImportError(msg) from None
+        return None
+    return pa, pacsv
+
+
+def _as_sorted_categorical(df: pd.DataFrame, columns: "tuple[str, ...]") -> pd.DataFrame:
+    """Make `columns` categorical with pandas' lexicographically sorted order.
+
+    Category *order* is not cosmetic: pandas groups and sorts a categorical by
+    it, so `sort_values("Chromosome")` follows it. `astype` sorts, but pyarrow's
+    dictionary is in order of first appearance, so without this the row order of
+    a sort or a groupby would depend on whether pyarrow happened to be
+    installed.
+    """
+    for column in columns:
+        if column not in df.columns:
+            continue
+        values = df[column]
+        if isinstance(values.dtype, pd.CategoricalDtype):
+            categories = values.cat.categories
+            if not categories.is_monotonic_increasing:
+                df[column] = values.cat.reorder_categories(categories.sort_values())
+        else:
+            df[column] = values.astype("category")
+    return df
+
+
+def _skip_comment_rows(row) -> str:
+    """Skip a whole-line comment; refuse any other ragged row.
+
+    pandas drops `#` lines because of `comment="#"`; to pyarrow they are rows
+    with the wrong number of fields. A ragged row that is not a comment -- the
+    sequence lines of a `##FASTA` section, say -- is a file this path does not
+    model, so it errors out and the caller falls back to pandas.
+    """
+    return "skip" if row.text.lstrip().startswith("#") else "error"
+
+
+def _contains_hash(pa: "ModuleType", column: "pa.ChunkedArray") -> bool:
+    """Report whether the byte `#` occurs anywhere in a text column.
+
+    `comment="#"` truncates a line at a `#` in *any* position, not only at the
+    start, so a file with one inside a field is read differently by the two
+    parsers. Rather than model that, detect it and let pandas have the file.
+
+    Only the raw character buffer is needed, so this runs at memory speed --
+    about 0.03 s over a 764 MB column, against 0.7 s for
+    `pyarrow.compute.match_substring`.
+    """
+    for chunk in column.chunks:
+        # A dictionary column keeps its text in the (tiny) dictionary.
+        values = chunk.dictionary if pa.types.is_dictionary(chunk.type) else chunk
+        if not (pa.types.is_string(values.type) or pa.types.is_large_string(values.type)):
+            continue
+        data = values.buffers()[2]
+        if data is None:
+            continue
+        if (np.frombuffer(data, dtype=np.uint8) == _HASH).any():
+            return True
+    return False
+
+
+def _widen_empty_columns(pa: "ModuleType", table: "pa.Table") -> "pa.Table":
+    """Give a wholly-empty column the float64 pandas would have inferred.
+
+    An empty field is null on both sides, but a column that is *nothing but*
+    empty fields has no type to infer: pandas calls it float64 full of NaN,
+    pyarrow calls it `null`, and null converts to an object column of None.
+    """
+    fields = [field.with_type(pa.float64()) if pa.types.is_null(field.type) else field for field in table.schema]
+    if all(field.type == original.type for field, original in zip(fields, table.schema, strict=True)):
+        return table
+    return table.cast(pa.schema(fields))
+
+
+def _arrow_read_csv(
+    path: Path,
+    *,
+    column_names: list[str] | None,
+    dictionary_columns: "tuple[str, ...]" = (),
+    integer_columns: "tuple[str, ...]" = (),
+    skip_comment_lines: bool = False,
+    skip_rows: int = 0,
+) -> "pa.Table | None":
+    """Parse a tab-separated file with `pyarrow.csv`, or return None for pandas.
+
+    pandas' C parser is single-threaded, and on a large file it is most of the
+    cost of reading. `pyarrow.csv` parses on every core and hands back an Arrow
+    table; asking for the categorical columns as dictionaries up front means
+    they arrive without a second pass. Measured on a 12-core machine:
+
+        rows       file        pandas   pyarrow
+        10^7       hg38          1.27      0.12
+        10^8       hg38         12.93      1.19
+        10^8       proteome     51.49      3.16
+
+    Returns None whenever pandas should read the file instead. pandas is the
+    reference implementation, so anything this path does not model exactly is
+    handed back rather than approximated.
+    """
+    modules = _pyarrow_csv()
+    if modules is None:
+        return None
+    pa, pacsv = modules
+
+    dictionary: object = pa.dictionary(pa.int32(), pa.string())
+    column_types: dict[str, object] = dict.fromkeys(dictionary_columns, dictionary)
+    # Pinned rather than inferred: inference turns a coordinate too large for
+    # int64 into a float, quietly rounding it, where pandas keeps the integer.
+    # Pinned, pyarrow refuses the file and pandas gets it.
+    column_types.update({name: pa.int64() for name in integer_columns})
+
+    parse_options = pacsv.ParseOptions(
+        delimiter="\t",
+        **({"invalid_row_handler": _skip_comment_rows} if skip_comment_lines else {}),
+    )
+    read_options = (
+        pacsv.ReadOptions(column_names=column_names, use_threads=True, skip_rows=skip_rows)
+        if column_names is not None
+        # The file names its own columns; let pyarrow read them.
+        else pacsv.ReadOptions(use_threads=True, skip_rows=skip_rows)
+    )
+
+    try:
+        table = pacsv.read_csv(
+            path,
+            read_options=read_options,
+            parse_options=parse_options,
+            convert_options=pacsv.ConvertOptions(
+                column_types=column_types,
+                # pandas applies its NA list to text columns as well, so an
+                # empty field reads back as NaN rather than "". pyarrow only
+                # does that when asked, and its default null list is the same
+                # set of spellings.
+                strings_can_be_null=True,
+            ),
+        )
+    except (pa.ArrowInvalid, pa.ArrowNotImplementedError, UnicodeDecodeError, OSError):
+        # Ragged rows, an encoding pandas tolerates, an unreadable compression:
+        # all of these are pandas' problem to solve, not reasons to fail.
+        return None
+
+    if skip_comment_lines and any(_contains_hash(pa, table.column(name)) for name in table.column_names):
+        return None
+
+    # A file with no data lines is not worth modelling: pandas' empty frame
+    # carries the dtypes of the chunk it never filled, which the Arrow schema
+    # does not reproduce.
+    if table.num_rows == 0:
+        return None
+
+    return _widen_empty_columns(pa, table)
+
+
+def _arrow_to_pandas(table: "pa.Table") -> pd.DataFrame:
+    """Convert to pandas using pandas' own spelling of a missing value.
+
+    pyarrow puts `None` in an object column where pandas' reader puts `NaN`.
+    Under pandas 3 both are NA and the difference does not arise; under pandas 2
+    they are distinguishable, and pandas already warns that a future version
+    will stop treating them as equal.
+
+    `null_count` is Arrow metadata, so a column without nulls costs nothing.
+    """
+    df = table.to_pandas()
+    for name in df.columns:
+        if df[name].dtype == object and table.column(name).null_count:
+            df[name] = df[name].fillna(np.nan)
+    return df
+
+
+def _read_bed_pyarrow(
+    path: Path,
+    *,
+    names: list[str] | None,
+    header: int | None,
+    skip_rows: int = 0,
+) -> "pd.DataFrame | None":
+    """Read a BED file with `pyarrow.csv`, or return None to use pandas."""
+    named = names if header != 0 and names is not None else []
+    table = _arrow_read_csv(
+        path,
+        column_names=names if header != 0 else None,
+        dictionary_columns=tuple(c for c in ("Chromosome", "Strand") if c in named),
+        integer_columns=tuple(c for c in ("Start", "End") if c in named),
+        skip_rows=skip_rows,
+    )
+    return None if table is None else _arrow_to_pandas(table)
 
 
 def read_bam(
@@ -154,6 +528,7 @@ def read_bam(
     filter_flag: int = 1540,
     *,
     sparse: bool = True,
+    region: str | None = None,
 ) -> "PyRanges":
     """Return bam file as PyRanges.
 
@@ -177,6 +552,11 @@ def read_bam(
         Ignore reads with these flags. Default 1540, which means that either
         the read is unmapped, the read failed vendor or platfrom quality
         checks, or the read is a PCR or optical duplicate.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
+        Needs a .bai or .csi index, and pysam rather than bamread.
 
     Returns
     -------
@@ -209,14 +589,14 @@ def read_bam(
     Contains 1 chromosomes and 2 strands.
 
     """
+    if region is not None:
+        return _read_pysam_alignment(f, "rb", mapq, required_flag, filter_flag, None, sparse=sparse, region=region)
     path = Path(f)
     try:
         import bamread  # type: ignore[import]
     except ImportError:
-        LOGGER.exception(
-            "bamread must be installed to read bam. Use `conda install -c bioconda bamread` or `pip install bamread` to install it.",
-        )
-        sys.exit(1)
+        msg = "bamread must be installed to read bam. Use `conda install -c bioconda bamread` or `pip install bamread` to install it."
+        raise ImportError(msg) from None
 
     if bamread.__version__ in {
         "0.0.1",
@@ -229,10 +609,8 @@ def read_bam(
         "0.0.8",
         "0.0.9",
     }:
-        LOGGER.exception(
-            "bamread not recent enough. Must be 0.0.10 or higher. Use `conda install -c bioconda 'bamread>=0.0.10'` or `pip install bamread>=0.0.10` to install it.",
-        )
-        sys.exit(1)
+        msg = "bamread not recent enough. Must be 0.0.10 or higher. Use `conda install -c bioconda 'bamread>=0.0.10'` or `pip install bamread>=0.0.10` to install it."
+        raise ImportError(msg)
 
     if sparse:
         return ensure_pyranges(bamread.read_bam(path, mapq, required_flag, filter_flag))
@@ -247,6 +625,7 @@ def read_gtf(
     nrows: int | None = None,
     duplicate_attr: bool = False,
     ignore_bad: bool = False,
+    storage_options: dict | None = None,
 ) -> "PyRanges":
     r"""Read files in the Gene Transfer Format.
 
@@ -260,10 +639,17 @@ def read_gtf(
 
     duplicate_attr : bool, default False
         Whether to handle (potential) duplicate attributes or just keep last one.
+        Repeated attributes are joined with commas. GENCODE gives most rows several
+        "tag" attributes, so pass True to keep e.g. Ensembl_canonical and MANE_Select
+        (see pyranges1.genes.select_transcripts).
 
     ignore_bad : bool, default False
         Whether to ignore bad lines or raise an error.
 
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Returns
     -------
@@ -298,6 +684,9 @@ def read_gtf(
     Contains 1 chromosomes and 1 strands.
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_gtf(local, nrows=nrows, duplicate_attr=duplicate_attr, ignore_bad=ignore_bad)
     return read_gtf_full(
         Path(f),
         nrows=nrows,
@@ -348,6 +737,10 @@ def read_gtf_full(
         chunksize=chunksize,
         duplicate_attr=duplicate_attr,
         ignore_bad=ignore_bad,
+        # gtfreader parses the fixed GTF columns through its own pyarrow path,
+        # which `_pyarrow_csv` above cannot reach, so the option is forwarded
+        # rather than applied here.
+        use_pyarrow=cast("bool | None", option_manager.get_option("use_pyarrow")),
     )
     return ensure_pyranges(df)
 
@@ -376,21 +769,115 @@ def to_rows_keep_duplicates(anno: pd.Series, *, ignore_bad: bool = False) -> pd.
     return gtfreader.to_rows_keep_duplicates(anno, ignore_bad=ignore_bad)
 
 
+def _compiled_gff3_parser() -> "Callable | None":
+    """Return gtfreader's compiled GFF3 attribute parser, or None without it.
+
+    Imported from the extension module rather than the package, because that is
+    the import that actually fails when the extension was not built or gtfreader
+    predates the parser -- the package re-exports a stub that raises on call.
+    Tests patch this to force the Python parser.
+    """
+    try:
+        from gtfreader._parser import parse_gff3_chunk_columns
+    except ImportError:
+        return None
+    return parse_gff3_chunk_columns
+
+
 def to_rows_gff3(anno: pd.Series) -> pd.DataFrame:
-    """Parse GFF3 attribute column into a dataframe of attribute columns."""
-    rowdicts = [to_keys_and_values(line) for line in list(anno)]
+    """Parse GFF3 attribute column into a dataframe of attribute columns.
+
+    With the tabular parse handed to pyarrow, this is about three quarters of a
+    GFF3 read. The Python path below builds a dict per row and lets pandas
+    reconcile them, which costs as much again as the parsing does; the compiled
+    parser fills one list per column and skips `from_records` entirely. 2.37x
+    at 10^6 rows, and the same frame either way.
+    """
+    # A row with no attribute at all -- an empty ninth field, or the sequence
+    # lines of a `##FASTA` section, which arrive as ragged rows padded with NaN
+    # -- has nothing to expand. That is not a parse error.
+    normalized = anno.where(anno.notna(), "")
+
+    parse = _compiled_gff3_parser()
+    if parse is not None:
+        return pd.DataFrame(parse(normalized.to_numpy(copy=False)), index=anno.index)
+
+    rowdicts = [to_keys_and_values(line) for line in normalized]
 
     return pd.DataFrame.from_records(rowdicts).set_index(anno.index)
 
 
 def to_keys_and_values(line: str) -> dict[str, str]:
     """Parse GFF3 attribute column."""
-    return dict(it.split("=") for it in line.rstrip("; ").split(";"))
+    # Split once: a value may contain `=`, and GFF3 in the wild does not always
+    # percent-encode it. Segments without one are not tag=value pairs and are
+    # skipped, which is also what makes an empty attribute an empty dict.
+    return dict(it.split("=", 1) for it in line.rstrip("; ").split(";") if "=" in it)
+
+
+def read_gff(
+    f: str | Path,
+    /,
+    *,
+    nrows: int | None = None,
+    duplicate_attr: bool = False,
+    ignore_bad: bool = False,
+) -> "PyRanges":
+    """Read a GFF file, as GFF3 or as GTF/GFF2 depending on its content.
+
+    A ``##gff-version 3`` line, or ``key=value`` attributes on the first record,
+    mean GFF3, read with `read_gff3`; ``key "value"`` attributes mean GTF, read
+    with `read_gtf`.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to the GFF file, optionally gzip-compressed.
+
+    nrows : int, default None
+        Number of rows to read. Default None, i.e. all.
+
+    duplicate_attr : bool, default False
+        Passed to `read_gtf` when the file is read as GTF; ignored for GFF3.
+
+    ignore_bad : bool, default False
+        Passed to `read_gtf` when the file is read as GTF; ignored for GFF3.
+
+    Returns
+    -------
+    PyRanges
+
+    See Also
+    --------
+    pyranges1.read_gff3 : read GFF3 files
+    pyranges1.read_gtf : read GTF files
+
+    """
+    import gzip
+
+    path = Path(f)
+    with path.open("rb") as fh:
+        compressed = fh.read(2) == b"\x1f\x8b"
+    gff3 = False
+    with gzip.open(path, "rt") if compressed else path.open() as fh:
+        for line in fh:
+            if line.startswith("##gff-version"):
+                gff3 = line.split()[1:2] == ["3"]
+                break
+            if line.strip() and not line.startswith("#"):
+                attributes = line.rstrip("\n").split("\t")[8:9]
+                gff3 = bool(attributes) and "=" in attributes[0] and '"' not in attributes[0]
+                break
+    if gff3:
+        return read_gff3(path, nrows=nrows)
+    return read_gtf(path, nrows=nrows, duplicate_attr=duplicate_attr, ignore_bad=ignore_bad)
 
 
 def read_gff3(
     f: str | Path,
     nrows: int | None = None,
+    *,
+    storage_options: dict | None = None,
 ) -> "PyRanges":
     """Read files in the General Feature Format into a PyRanges.
 
@@ -402,6 +889,10 @@ def read_gff3(
     nrows : int, default None
         Number of rows to read. Default None, i.e. all.
 
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
+
     Returns
     -------
     PyRanges
@@ -412,50 +903,167 @@ def read_gff3(
     PyRanges (and also the DF returned by this function, if as_df=True), instead
     encodes intervals as 0-based, Start included and End excluded.
 
+    If `pyarrow` is installed, the nine fixed columns are parsed on every core
+    rather than one; the result is identical either way. Install it with
+    `pip install pyranges1[fast-io]`. Expanding the attribute column is the bulk
+    of the work and is unaffected, so the gain is around 1.3x, not the 10-18x
+    `read_bed` sees.
+
     See Also
     --------
     pyranges1.read_gtf : read files in the Gene Transfer Format
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_gff3(local, nrows=nrows)
     path = Path(f)
 
     dtypes: Mapping = {"Chromosome": "category", "Feature": "category", "Strand": "category"}
 
     names = ["Chromosome", "Source", "Feature", "Start", "End", "Score", "Strand", "Frame", "Attribute"]
+    chunksize = int(1e5)
 
-    df_iter = pd.read_csv(
-        path,
-        comment="#",
-        sep="\t",
-        header=None,
-        names=names,
-        dtype=dtypes,
-        chunksize=int(1e5),
-        nrows=nrows,
+    # `nrows` stays on the pandas path: pyarrow.csv has no row limit, so reading
+    # the whole file to throw most of it away would be slower, not faster.
+    table = (
+        None
+        if nrows is not None
+        else _arrow_read_csv(
+            path,
+            column_names=names,
+            dictionary_columns=tuple(dtypes),
+            integer_columns=("Start", "End"),
+            skip_comment_lines=True,
+        )
     )
 
-    dfs = []
-    for df in df_iter:
-        extra = to_rows_gff3(df.Attribute.astype(str))
-        _df = df.drop("Attribute", axis=1)
-        extra = extra.set_index(_df.index)
-        ndf = pd.concat([_df, extra], axis=1, sort=False)
-        dfs.append(ndf)
+    if table is not None:
+        dfs = _gff3_frames_from_arrow(table, chunksize)
+    else:
+        # Records end where a ##FASTA section begins; its sequence lines are not
+        # features. (They also send the pyarrow path here.)
+        fasta_at = _gff3_records_before_fasta(path)
+        if fasta_at is not None:
+            nrows = fasta_at if nrows is None else min(nrows, fasta_at)
+        df_iter = pd.read_csv(
+            path,
+            comment="#",
+            sep="\t",
+            header=None,
+            names=names,
+            dtype=dtypes,
+            chunksize=chunksize,
+            nrows=nrows,
+        )
+
+        dfs = []
+        for df in df_iter:
+            extra = to_rows_gff3(df.Attribute.astype(str))
+            _df = df.drop("Attribute", axis=1)
+            extra = extra.set_index(_df.index)
+            ndf = pd.concat([_df, extra], axis=1, sort=False)
+            dfs.append(ndf)
 
     df = pd.concat(dfs, sort=False)
 
     df.loc[:, "Start"] = df.Start - 1
 
+    # One dtype whatever the file. Without this it is an accident of chunking:
+    # pd.concat demotes a categorical to object when the chunks carry different
+    # categories, so on a coordinate-sorted GFF3 Chromosome came back object
+    # while Feature came back category, and the answer depended on a chunk size
+    # that is a tuning knob rather than a contract.
+    _as_sorted_categorical(df, tuple(dtypes))
+
     return ensure_pyranges(df)
 
 
-def read_bigwig(f: str | Path) -> "PyRanges":
+def _gff3_records_before_fasta(path: Path) -> int | None:
+    """Count the records before a ``##FASTA`` line; None when there is none.
+
+    Most GFF3 files have no FASTA section, and a byte search says so without
+    parsing lines; only a file that has one is read line by line.
+    """
+    import gzip
+
+    with path.open("rb") as fh:
+        compressed = fh.read(2) == b"\x1f\x8b"
+    opener = gzip.open if compressed else open
+    with opener(path, "rb") as fh:
+        tail = b""
+        while chunk := fh.read(1 << 24):
+            if b"##FASTA" in tail + chunk:
+                break
+            tail = chunk[-6:]
+        else:
+            return None
+    records = 0
+    with opener(path, "rb") as fh:
+        for line in fh:
+            if line.startswith(b"##FASTA"):
+                return records
+            if line.strip() and not line.startswith(b"#"):
+                records += 1
+    return None
+
+
+def _gff3_frames_from_arrow(table: "pa.Table", chunksize: int) -> list[pd.DataFrame]:
+    """Expand attributes a chunk at a time, as the pandas path does.
+
+    Slicing the Arrow table rather than converting it whole keeps the raw
+    attribute strings of one chunk alive at a time.
+    """
+    dfs = []
+    for start in range(0, table.num_rows, chunksize):
+        df = _arrow_to_pandas(table.slice(start, chunksize))
+        # pandas numbers its chunks continuously across the file; a slice
+        # converted on its own would restart at zero and the concat would end up
+        # with a repeated index.
+        df.index = pd.RangeIndex(start, start + len(df))
+        extra = to_rows_gff3(df.Attribute.astype(str))
+        _df = df.drop("Attribute", axis=1)
+        extra = extra.set_index(_df.index)
+        dfs.append(pd.concat([_df, extra], axis=1, sort=False))
+    return dfs
+
+
+def _without_commas(region: str) -> str:
+    """Drop the thousands separators samtools accepts in a region and pysam does not."""
+    chromosome, colon, span = region.rpartition(":")
+    return f"{chromosome}{colon}{span.replace(',', '')}" if colon else region
+
+
+def _parse_region(region: str, sizes: "Mapping[str, int]") -> tuple[str, int, int] | None:
+    """Parse a samtools-style region into (chromosome, start, end), 0-based and half-open.
+
+    ``"chr1"`` is the whole chromosome, ``"chr1:1000"`` runs from base 1000 to its
+    end, and ``"chr1:1,000-2,000"`` is bases 1000 to 2000 inclusive. None when the
+    file has no such chromosome.
+    """
+    chromosome, _, span = region.rpartition(":")
+    bounds = span.replace(",", "").split("-")
+    if not chromosome or not all(b.isdigit() for b in bounds if b) or len(bounds) > 2:  # noqa: PLR2004
+        chromosome, bounds = region, [""]
+    if chromosome not in sizes:
+        return None
+    size = sizes[chromosome]
+    start = int(bounds[0]) - 1 if bounds[0] else 0
+    end = int(bounds[1]) if len(bounds) == 2 and bounds[1] else size  # noqa: PLR2004
+    return chromosome, max(start, 0), min(end, size)
+
+
+def read_bigwig(f: str | Path, *, region: str | None = None) -> "PyRanges":
     """Read bigwig files into a PyRanges.
 
     Parameters
     ----------
     f : str
         Path to bw file.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
 
     Returns
     -------
@@ -471,7 +1079,7 @@ def read_bigwig(f: str | Path) -> "PyRanges":
     >>> path = pr.example_data.files["bigwig.bw"]
     >>> pr.read_bigwig(path)
       index  |      Chromosome    Start      End      Value
-      int64  |             str    int64    int64    float64
+      int64  |        category    int64    int64    float64
     -------  ---  ------------  -------  -------  ---------
           0  |               1        0        1        0.1
           1  |               1        1        2        0.2
@@ -487,13 +1095,25 @@ def read_bigwig(f: str | Path) -> "PyRanges":
     try:
         import pyBigWig  # type: ignore[import]
     except ModuleNotFoundError:
-        LOGGER.exception(
-            "pyBigWig must be installed to read bigwigs. Use `pip install pyBigWig` to install it.",
-        )
-        sys.exit(1)
+        msg = "pyBigWig must be installed to read bigwigs. Use `pip install pyBigWig` to install it."
+        raise ImportError(msg) from None
 
     path = Path(f)
     bw = pyBigWig.open(str(path))
+
+    if region is not None:
+        window = _parse_region(region, bw.chroms())
+        intervals = (bw.intervals(*window) or ()) if window is not None else ()
+        return ensure_pyranges(
+            pd.DataFrame(
+                {
+                    "Chromosome": pd.Categorical([window[0]] * len(intervals) if window else []),
+                    "Start": pd.Series([i[0] for i in intervals], dtype="int64"),
+                    "End": pd.Series([i[1] for i in intervals], dtype="int64"),
+                    "Value": pd.Series([i[2] for i in intervals], dtype="float64"),
+                }
+            )
+        )
 
     size = int(1e5)
     chromosomes = bw.chroms()
@@ -514,6 +1134,10 @@ def read_bigwig(f: str | Path) -> "PyRanges":
             intervals = bw.intervals(chromosome, start, end)
             if intervals is not None:
                 for s, e, v in intervals:
+                    # An interval that crosses into this window was already read
+                    # with the window it starts in.
+                    if s < start:
+                        continue
                     outstarts.append(s)
                     outends.append(e)
                     outvalues.append(v)
@@ -530,4 +1154,1171 @@ def read_bigwig(f: str | Path) -> "PyRanges":
             },
         )
 
-    return ensure_pyranges(pd.concat(dfs).reset_index(drop=True))
+    df = pd.concat(dfs).reset_index(drop=True)
+    # Chromosome as categorical, consistent with the other readers (read_bed / read_gtf /
+    # read_pairs). Without this it follows pandas' string default — `object` on pandas 2.x,
+    # the new `str` dtype on pandas 3.0 — which breaks the doctype-sensitive doctest and
+    # diverges from the rest of the library.
+    df["Chromosome"] = df["Chromosome"].astype("category")
+    return ensure_pyranges(df)
+
+
+# Minimum number of tab-separated fields in a 4DN .pairs record
+# (readID, chr1, pos1, chr2, pos2, strand1, strand2).
+_PAIRS_MIN_FIELDS = 7
+
+# The first three BigBed autoSql fields are always the coordinate columns
+# (Chromosome, Start, End); any further fields are optional metadata columns.
+_BED_COORD_NCOLS = 3
+
+# autoSql field name -> PyRanges column name, for the optional columns embedded
+# in a BigBed's SQL schema (the first three are always Chromosome/Start/End).
+_BIGBED_AUTOSQL_TO_PYRANGES = {
+    "name": "Name",
+    "score": "Score",
+    "strand": "Strand",
+    "thickStart": "ThickStart",
+    "thickEnd": "ThickEnd",
+    "itemRgb": "ItemRGB",
+    "blockCount": "BlockCount",
+    "blockSizes": "BlockSizes",
+    "blockStarts": "BlockStarts",
+}
+
+
+def _alignments(af: Any, f: "str | Path", region: str | None) -> Any:
+    """Iterate over the reads of an open pysam file, or over those overlapping `region`."""
+    if not region:
+        return af
+    if not af.has_index():
+        msg = f"{f}: region= needs a BAM or CRAM file with a .bai, .csi or .crai index (`samtools index`)."
+        raise ValueError(msg)
+    return af.fetch(region=_without_commas(region))
+
+
+def _read_pysam_alignment(
+    f: "str | Path",
+    mode: Literal["r", "rb", "rc"],
+    mapq: int,
+    required_flag: int,
+    filter_flag: int,
+    reference_filename: "str | Path | None",
+    *,
+    sparse: bool,
+    region: str | None = None,
+) -> "PyRanges":
+    """Read a SAM/CRAM file via pysam into a PyRanges.
+
+    Shared backend for :func:`read_sam` (``mode="r"``) and :func:`read_cram`
+    (``mode="rc"``). The output schema matches :func:`read_bam`: sparse reads
+    return ``Chromosome, Start, End, Strand, Flag``; full reads additionally
+    return ``QueryStart, QueryEnd, QuerySequence, Name, Cigar, Quality``.
+    Unmapped reads are always skipped.
+    """
+    try:
+        import pysam  # type: ignore[import]
+    except ImportError:
+        msg = (
+            "pysam must be installed to read SAM/CRAM files. "
+            "Use `conda install -c bioconda pysam` or `pip install pysam`."
+        )
+        raise ImportError(msg) from None
+
+    open_kwargs: dict = {}
+    if reference_filename is not None:
+        open_kwargs["reference_filename"] = str(reference_filename)
+
+    chromosomes: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    strands: list[str] = []
+    flags: list[int] = []
+    query_starts: list[int] = []
+    query_ends: list[int] = []
+    query_seqs: list[str | None] = []
+    names: list[str | None] = []
+    cigars: list[str | None] = []
+    quals: list[str | None] = []
+
+    with pysam.AlignmentFile(str(f), mode, **open_kwargs) as af:
+        for read in _alignments(af, f, region):
+            if read.is_unmapped or read.mapping_quality < mapq:
+                continue
+            if required_flag and (read.flag & required_flag) != required_flag:
+                continue
+            if read.flag & filter_flag:
+                continue
+            end = read.reference_end
+            if end is None:
+                continue
+            chromosomes.append(read.reference_name or "")
+            starts.append(read.reference_start)
+            ends.append(end)
+            strands.append("-" if read.is_reverse else "+")
+            flags.append(read.flag)
+            if not sparse:
+                query_starts.append(read.query_alignment_start)
+                query_ends.append(read.query_alignment_end)
+                query_seqs.append(read.query_sequence)
+                names.append(read.query_name)
+                cigars.append(read.cigarstring)
+                quals.append(
+                    "".join(chr(q + 33) for q in read.query_qualities) if read.query_qualities is not None else None,
+                )
+
+    data: dict = {
+        "Chromosome": pd.Categorical(chromosomes),
+        "Start": starts,
+        "End": ends,
+        "Strand": pd.Categorical(strands),
+        "Flag": pd.Series(flags, dtype="uint16"),
+    }
+    if not sparse:
+        data["QueryStart"] = query_starts
+        data["QueryEnd"] = query_ends
+        data["QuerySequence"] = query_seqs
+        data["Name"] = names
+        data["Cigar"] = cigars
+        data["Quality"] = quals
+
+    return ensure_pyranges(pd.DataFrame(data))
+
+
+def read_sam(
+    f: "str | Path",
+    /,
+    mapq: int = 0,
+    required_flag: int = 0,
+    filter_flag: int = 1540,
+    *,
+    sparse: bool = True,
+    region: str | None = None,
+) -> "PyRanges":
+    """Return SAM file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to SAM file.
+
+    mapq : int, default 0
+        Minimum mapping quality score. Reads below this are skipped.
+
+    required_flag : int, default 0
+        Flags which must all be present for the read to be kept (0 = no requirement).
+
+    filter_flag : int, default 1540
+        Ignore reads with any of these flags. Default 1540 = unmapped (4) +
+        QC-fail (512) + PCR/optical duplicate (1024).
+
+    sparse : bool, default True
+        Whether to return only the columns Chromosome, Start, End, Strand, Flag.
+        Set to False to additionally return QueryStart, QueryEnd, QuerySequence,
+        Name, Cigar, Quality (more time consuming).
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Needs an index. Records are not clipped to it.
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    This functionality requires the library ``pysam``. It can be installed with
+    ``pip install pysam`` or ``conda install -c bioconda pysam``. Unmapped reads
+    are always skipped. The output mirrors :func:`read_bam`.
+
+    See Also
+    --------
+    pyranges1.read_bam : read alignments from a BAM file
+    pyranges1.read_cram : read alignments from a CRAM file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr  # doctest: +SKIP
+    >>> pr.read_sam("reads.sam")  # doctest: +SKIP
+
+    """
+    return _read_pysam_alignment(f, "r", mapq, required_flag, filter_flag, None, sparse=sparse, region=region)
+
+
+def read_cram(
+    f: "str | Path",
+    /,
+    mapq: int = 0,
+    required_flag: int = 0,
+    filter_flag: int = 1540,
+    *,
+    sparse: bool = True,
+    reference_filename: "str | Path | None" = None,
+    region: str | None = None,
+) -> "PyRanges":
+    """Return CRAM file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to CRAM file.
+
+    mapq : int, default 0
+        Minimum mapping quality score. Reads below this are skipped.
+
+    required_flag : int, default 0
+        Flags which must all be present for the read to be kept (0 = no requirement).
+
+    filter_flag : int, default 1540
+        Ignore reads with any of these flags. Default 1540 = unmapped (4) +
+        QC-fail (512) + PCR/optical duplicate (1024).
+
+    sparse : bool, default True
+        Whether to return only the columns Chromosome, Start, End, Strand, Flag.
+        Set to False to additionally return QueryStart, QueryEnd, QuerySequence,
+        Name, Cigar, Quality (more time consuming).
+
+    reference_filename : str or Path, optional
+        Path to the reference FASTA used during CRAM encoding. Required to
+        reconstruct sequence/quality (``sparse=False``) or when the CRAM's
+        ``@SQ UR:`` header tag does not point to an accessible reference.
+        Coordinate-only reads (``sparse=True``) can often be decoded without it.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Needs an index. Records are not clipped to it.
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    This functionality requires the library ``pysam``. It can be installed with
+    ``pip install pysam`` or ``conda install -c bioconda pysam``. Unmapped reads
+    are always skipped. The output mirrors :func:`read_bam`.
+
+    See Also
+    --------
+    pyranges1.read_bam : read alignments from a BAM file
+    pyranges1.read_sam : read alignments from a SAM file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr  # doctest: +SKIP
+    >>> pr.read_cram("reads.cram", reference_filename="genome.fa")  # doctest: +SKIP
+
+    """
+    return _read_pysam_alignment(
+        f, "rc", mapq, required_flag, filter_flag, reference_filename, sparse=sparse, region=region
+    )
+
+
+def read_bigbed(f: "str | Path", *, region: str | None = None) -> "PyRanges":
+    """Return BigBed file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to BigBed (.bb) file.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    This functionality requires the library ``pyBigWig`` (``pip install pyBigWig``).
+    Column names beyond Chromosome/Start/End are taken from the autoSql schema
+    embedded in the BigBed; the conventional BED field names map back to PyRanges
+    columns (``name`` -> ``Name``, ``strand`` -> ``Strand`` ...).
+
+    See Also
+    --------
+    pyranges1.read_bigwig : read signal values from a BigWig file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr  # doctest: +SKIP
+    >>> pr.read_bigbed("annotations.bb")  # doctest: +SKIP
+
+    """
+    try:
+        import pyBigWig  # type: ignore[import]
+    except ModuleNotFoundError:
+        msg = "pyBigWig must be installed to read BigBed files. Use `pip install pyBigWig` to install it."
+        raise ImportError(msg) from None
+
+    import re
+    from io import StringIO
+
+    bb = pyBigWig.open(str(Path(f)))
+    sql = bb.SQL() or ""
+    if isinstance(sql, bytes):
+        sql = sql.decode("ascii")
+
+    col_names = [
+        _BIGBED_AUTOSQL_TO_PYRANGES.get(m.group(1), m.group(1))
+        for line in sql.splitlines()
+        if (m := re.match(r"\s*[A-Za-z_]\w*(?:\[[^\]]*\])?\s+`?(\w+)`?\s*;", line))
+    ]
+
+    if region is None:
+        windows = [(chrom, 0, chrom_len) for chrom, chrom_len in bb.chroms().items()]
+    else:
+        window = _parse_region(region, bb.chroms())
+        windows = [window] if window is not None else []
+
+    rows: list[tuple] = []
+    for chrom, lo, hi in windows:
+        entries = bb.entries(chrom, lo, hi)
+        if entries:
+            rows.extend((chrom, beg, end, rest) for beg, end, rest in entries)
+
+    if not rows:
+        empty: dict = {
+            "Chromosome": pd.Series([], dtype="category"),
+            "Start": pd.Series([], dtype="int64"),
+            "End": pd.Series([], dtype="int64"),
+        }
+        return ensure_pyranges(pd.DataFrame(empty))
+
+    coords = pd.DataFrame(
+        {
+            "Chromosome": pd.Categorical([r[0] for r in rows]),
+            "Start": [r[1] for r in rows],
+            "End": [r[2] for r in rows],
+        },
+    )
+
+    extra_cols = col_names[_BED_COORD_NCOLS:] if len(col_names) > _BED_COORD_NCOLS else []
+    if extra_cols:
+        meta_text = "\n".join(r[3] for r in rows if r[3] is not None)
+        meta = pd.read_csv(StringIO(meta_text), sep="\t", names=extra_cols, header=None)
+        df = pd.concat([coords.reset_index(drop=True), meta.reset_index(drop=True)], axis=1)
+    else:
+        df = coords
+
+    if "Strand" in df.columns:
+        df["Strand"] = df["Strand"].astype("category")
+
+    return ensure_pyranges(df)
+
+
+def read_pairs(
+    f: "str | Path",
+    /,
+    nrows: int | None = None,
+    anchor: str = "1",
+    *,
+    storage_options: dict | None = None,
+) -> "PyRanges":
+    r"""Return a 4DN Hi-C ``.pairs`` / ``.pairs.gz`` file as PyRanges.
+
+    The 4DN pairs format is a TSV with a ``#``-prefixed header block followed by
+    records ``readID, chr1, pos1, chr2, pos2, strand1, strand2``. Each Hi-C
+    contact is a pair of point coordinates; this reader keeps both mates on a
+    single row, promoting one mate (the *anchor*) to the canonical
+    ``Chromosome / Start / End / Strand`` columns and demoting the other to
+    ``OtherChromosome / OtherStart / OtherEnd / OtherStrand``. Point positions
+    become single-base intervals (``End = Start + 1``).
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to a ``.pairs`` or ``.pairs.gz`` file.
+
+    nrows : int, optional
+        Stop after reading this many records. Default None (all).
+
+    anchor : ``"1"`` or ``"2"``, default ``"1"``
+        Which mate of the pair becomes the genomic columns
+        (``Chromosome / Start / End / Strand``). The other mate is kept in the
+        ``Other*`` columns. Downstream PyRanges operations act on the anchor mate.
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
+
+    Returns
+    -------
+    PyRanges
+        Columns ``Chromosome, Start, End, Strand, OtherChromosome, OtherStart,
+        OtherEnd, OtherStrand, ReadID``.
+
+    Notes
+    -----
+    The ``pos`` fields are 1-based per the 4DN spec; this reader subtracts 1 so
+    coordinates are stored 0-based (Start included, End excluded), consistent
+    with the rest of PyRanges.
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> contents = '''## pairs format v1.0
+    ... #columns: readID chr1 pos1 chr2 pos2 strand1 strand2
+    ... r1\tchr1\t100\tchr2\t200\t+\t-
+    ... r2\tchr1\t150\tchr1\t900\t-\t+'''
+    >>> tmp = NamedTemporaryFile("w", suffix=".pairs")
+    >>> _ = tmp.write(contents)
+    >>> tmp.flush()
+    >>> gr = pr.read_pairs(tmp.name)
+    >>> list(gr.columns)
+    ['Chromosome', 'Start', 'End', 'Strand', 'OtherChromosome', 'OtherStart', 'OtherEnd', 'OtherStrand', 'ReadID']
+    >>> gr["Start"].tolist()
+    [99, 149]
+    >>> gr["OtherStart"].tolist()
+    [199, 899]
+    >>> pr.read_pairs(tmp.name, anchor="2")["Start"].tolist()
+    [199, 899]
+
+    """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_pairs(local, nrows=nrows, anchor=anchor)
+    if anchor not in ("1", "2"):
+        msg = f"anchor must be '1' or '2', got {anchor!r}"
+        raise ValueError(msg)
+
+    path = Path(f)
+    read_ids: list[str] = []
+    chr1: list[str] = []
+    pos1: list[int] = []
+    chr2: list[str] = []
+    pos2: list[int] = []
+    strand1: list[str] = []
+    strand2: list[str] = []
+
+    import gzip
+
+    opener = gzip.open if path.name.endswith(".gz") else open
+
+    n = 0
+    with opener(path, "rt") as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < _PAIRS_MIN_FIELDS:
+                continue
+            read_ids.append(parts[0])
+            chr1.append(parts[1])
+            pos1.append(int(parts[2]) - 1)
+            chr2.append(parts[3])
+            pos2.append(int(parts[4]) - 1)
+            strand1.append(parts[5])
+            strand2.append(parts[6])
+            n += 1
+            if nrows is not None and n >= nrows:
+                break
+
+    if anchor == "1":
+        a_chrom, a_pos, a_strand = chr1, pos1, strand1
+        o_chrom, o_pos, o_strand = chr2, pos2, strand2
+    else:
+        a_chrom, a_pos, a_strand = chr2, pos2, strand2
+        o_chrom, o_pos, o_strand = chr1, pos1, strand1
+
+    df = pd.DataFrame(
+        {
+            "Chromosome": pd.Categorical(a_chrom),
+            "Start": a_pos,
+            "End": [p + 1 for p in a_pos],
+            "Strand": pd.Categorical(a_strand),
+            "OtherChromosome": pd.Categorical(o_chrom),
+            "OtherStart": o_pos,
+            "OtherEnd": [p + 1 for p in o_pos],
+            "OtherStrand": pd.Categorical(o_strand),
+            "ReadID": read_ids,
+        },
+    )
+
+    return ensure_pyranges(df)
+
+
+# A PAF record has 12 mandatory tab fields; optional SAM-style KEY:TYPE:VALUE tags follow.
+_PAF_MIN_FIELDS = 12
+# SAM-style optional-tag TYPE codes we recognise.
+_PAF_TAG_TYPES = frozenset({"i", "f", "A", "Z", "B", "H"})
+
+
+def read_paf(  # noqa: C901, PLR0912, PLR0915
+    f: "str | Path",
+    /,
+    nrows: int | None = None,
+    anchor: str = "target",
+    *,
+    storage_options: dict | None = None,
+) -> "PyRanges":
+    r"""Return a PAF (minimap2 Pairwise mApping Format) file as PyRanges.
+
+    PAF is a TSV with 12 mandatory fields per alignment (query name/length/start/end,
+    strand, target name/length/start/end, matches, block length, mapping quality),
+    optionally followed by SAM-style ``KEY:TYPE:VALUE`` tags. Each row pairs a *query*
+    interval with a *target* interval; this reader promotes one side (the *anchor*) to
+    the canonical ``Chromosome / Start / End`` columns and keeps the other in
+    ``OtherChromosome / OtherStart / OtherEnd``.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to a ``.paf`` / ``.paf.gz`` file.
+
+    nrows : int, optional
+        Stop after this many records. Default None (all).
+
+    anchor : ``"target"`` or ``"query"``, default ``"target"``
+        Which alignment side becomes the genomic columns (``Chromosome / Start / End``).
+        The default ``"target"`` puts the reference side there; ``"query"`` puts the
+        read/contig side. The other side is kept in the ``Other*`` columns. PAF's single
+        ``Strand`` (the query-vs-target orientation) is kept regardless.
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
+
+    Returns
+    -------
+    PyRanges
+        Columns ``Chromosome, Start, End, Strand, OtherChromosome, OtherStart, OtherEnd,
+        QueryLength, TargetLength, Matches, BlockLength, MapQ`` plus one column per optional
+        tag encountered (named by the tag key, typed from its TYPE code: ``i`` -> nullable
+        Int64, ``f`` -> float, others -> string; a row lacking a tag gets a missing value).
+
+    Notes
+    -----
+    PAF coordinates are 0-based half-open, matching PyRanges, so ``Start`` / ``End`` are
+    used as-is. Lines with fewer than 12 fields are skipped.
+
+    See Also
+    --------
+    pyranges1.read_bed : read a plain BED file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> rec = "q1\t100\t10\t90\t+\tchr1\t1000\t200\t280\t75\t80\t60\tNM:i:5\tdv:f:0.02"
+    >>> tmp = NamedTemporaryFile("w", suffix=".paf")
+    >>> _ = tmp.write(rec + "\n")
+    >>> tmp.flush()
+    >>> gr = pr.read_paf(tmp.name)
+    >>> list(gr.columns)
+    ['Chromosome', 'Start', 'End', 'Strand', 'OtherChromosome', 'OtherStart', 'OtherEnd', 'QueryLength', 'TargetLength', 'Matches', 'BlockLength', 'MapQ', 'NM', 'dv']
+    >>> str(gr["Chromosome"][0]), int(gr["Start"][0]), int(gr["End"][0])
+    ('chr1', 200, 280)
+    >>> str(gr["OtherChromosome"][0]), int(gr["OtherStart"][0]), int(gr["OtherEnd"][0])
+    ('q1', 10, 90)
+    >>> int(gr["NM"][0]), float(gr["dv"][0])
+    (5, 0.02)
+    >>> str(pr.read_paf(tmp.name, anchor="query")["Chromosome"][0])
+    'q1'
+
+    """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_paf(local, nrows=nrows, anchor=anchor)
+    if anchor not in ("target", "query"):
+        msg = f"anchor must be 'target' or 'query', got {anchor!r}"
+        raise ValueError(msg)
+
+    import gzip
+
+    path = Path(f)
+    opener = gzip.open if path.name.endswith(".gz") else open
+
+    q_name: list[str] = []
+    q_len: list[int] = []
+    q_start: list[int] = []
+    q_end: list[int] = []
+    strand: list[str] = []
+    t_name: list[str] = []
+    t_len: list[int] = []
+    t_start: list[int] = []
+    t_end: list[int] = []
+    matches: list[int] = []
+    block_len: list[int] = []
+    mapq: list[int] = []
+    tag_values: dict[str, list] = {}
+    tag_types: dict[str, set[str]] = {}
+
+    n = 0
+    with opener(path, "rt") as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < _PAF_MIN_FIELDS:
+                continue
+            q_name.append(parts[0])
+            q_len.append(int(parts[1]))
+            q_start.append(int(parts[2]))
+            q_end.append(int(parts[3]))
+            strand.append(parts[4])
+            t_name.append(parts[5])
+            t_len.append(int(parts[6]))
+            t_start.append(int(parts[7]))
+            t_end.append(int(parts[8]))
+            matches.append(int(parts[9]))
+            block_len.append(int(parts[10]))
+            mapq.append(int(parts[11]))
+
+            seen: dict[str, str] = {}
+            for tag in parts[_PAF_MIN_FIELDS:]:
+                key, _, rest = tag.partition(":")
+                typ, _, val = rest.partition(":")
+                if not val or typ not in _PAF_TAG_TYPES:
+                    continue
+                seen[key] = val
+                tag_types.setdefault(key, set()).add(typ)
+            for key, val in seen.items():
+                tag_values.setdefault(key, [None] * n).append(val)
+            for key, col in tag_values.items():
+                if key not in seen:
+                    col.append(None)
+
+            n += 1
+            if nrows is not None and n >= nrows:
+                break
+
+    if not q_name:
+        empty: dict = {
+            "Chromosome": pd.Series([], dtype="category"),
+            "Start": pd.Series([], dtype="int64"),
+            "End": pd.Series([], dtype="int64"),
+        }
+        return ensure_pyranges(pd.DataFrame(empty))
+
+    if anchor == "target":
+        chrom, start, end = t_name, t_start, t_end
+        other_chrom, other_start, other_end = q_name, q_start, q_end
+    else:
+        chrom, start, end = q_name, q_start, q_end
+        other_chrom, other_start, other_end = t_name, t_start, t_end
+
+    df = pd.DataFrame(
+        {
+            "Chromosome": pd.Categorical(chrom),
+            "Start": start,
+            "End": end,
+            "Strand": pd.Categorical(strand),
+            "OtherChromosome": pd.Categorical(other_chrom),
+            "OtherStart": other_start,
+            "OtherEnd": other_end,
+            "QueryLength": q_len,
+            "TargetLength": t_len,
+            "Matches": matches,
+            "BlockLength": block_len,
+            "MapQ": mapq,
+        },
+    )
+
+    for key, vals in tag_values.items():
+        types = tag_types[key]
+        if types <= {"i"}:
+            df[key] = pd.to_numeric(pd.Series(vals), errors="coerce").astype("Int64")
+        elif types <= {"i", "f"}:
+            df[key] = pd.to_numeric(pd.Series(vals), errors="coerce")
+        else:
+            df[key] = vals
+
+    return ensure_pyranges(df)
+
+
+# ENCODE narrowPeak is BED6 + 4 fixed extra columns (MACS2/MACS3 output).
+_NARROWPEAK_COLUMNS = [
+    "Chromosome",
+    "Start",
+    "End",
+    "Name",
+    "Score",
+    "Strand",
+    "SignalValue",
+    "PValue",
+    "QValue",
+    "Peak",
+]
+
+
+_BROADPEAK_COLUMNS = _NARROWPEAK_COLUMNS[:-1]
+
+_GAPPEDPEAK_COLUMNS = [
+    *_NARROWPEAK_COLUMNS[:6],
+    "ThickStart",
+    "ThickEnd",
+    "ItemRGB",
+    "BlockCount",
+    "BlockSizes",
+    "BlockStarts",
+    "SignalValue",
+    "PValue",
+    "QValue",
+]
+
+
+def read_narrowPeak(f: "str | Path", /, nrows: int | None = None, *, storage_options: dict | None = None) -> "PyRanges":  # noqa: N802
+    r"""Return ENCODE narrowPeak (BED6+4) file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to narrowPeak file (may be gzip-compressed).
+
+    nrows : int, default None
+        Number of rows to read. Default None (all).
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    Columns: Chromosome, Start, End, Name, Score, Strand, SignalValue, PValue,
+    QValue, Peak. This is the format produced by MACS2/MACS3 and used by ENCODE.
+    ``#``-prefixed track/comment lines are skipped.
+
+    See Also
+    --------
+    pyranges1.read_bed : read a plain BED file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".narrowPeak")
+    >>> _ = tmp.write("chr1\t100\t200\tpeak1\t500\t+\t5.5\t3.2\t2.1\t50\n")
+    >>> tmp.flush()
+    >>> gr = pr.read_narrowPeak(tmp.name)
+    >>> list(gr.columns)
+    ['Chromosome', 'Start', 'End', 'Name', 'Score', 'Strand', 'SignalValue', 'PValue', 'QValue', 'Peak']
+    >>> gr["Start"].tolist(), gr["End"].tolist()
+    ([100], [200])
+    >>> gr["SignalValue"].tolist(), gr["Peak"].tolist()
+    ([5.5], [50])
+
+    """
+    return _read_peaks(f, _NARROWPEAK_COLUMNS, nrows, "narrowPeak", storage_options)
+
+
+def _read_peaks(
+    f: "str | Path", columns: list[str], nrows: int | None, kind: str, storage_options: dict | None = None
+) -> "PyRanges":
+    """Read an ENCODE peak file (narrowPeak, broadPeak, gappedPeak) with these columns.
+
+    Leading track, browser and comment lines are skipped. A file with another number
+    of fields is refused, rather than read with its columns shifted.
+    """
+    import gzip
+
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return _read_peaks(local, columns, nrows, kind)
+    path = Path(f)
+    with path.open("rb") as fh:
+        compressed = fh.read(2) == b"\x1f\x8b"
+    skip, fields = 0, len(columns)
+    with gzip.open(path, "rt") if compressed else path.open() as fh:
+        for skip, line in enumerate(fh):  # noqa: B007
+            if line.strip() and not line.startswith(("track", "browser", "#")):
+                fields = len(line.rstrip("\n").split("\t"))
+                break
+    if fields != len(columns):
+        msg = f"A {kind} file has {len(columns)} tab-separated fields; {path} has {fields}."
+        raise ValueError(msg)
+    df = pd.read_csv(
+        path,
+        sep="\t",
+        header=None,
+        names=columns,
+        nrows=nrows,
+        skiprows=skip,
+        comment="#",
+        compression="gzip" if compressed else "infer",
+        dtype={"Chromosome": "category", "Strand": "category"},
+    )
+    return ensure_pyranges(df)
+
+
+def read_broadPeak(f: "str | Path", /, nrows: int | None = None, *, storage_options: dict | None = None) -> "PyRanges":  # noqa: N802
+    r"""Return ENCODE broadPeak (BED6+3) file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to broadPeak file (may be gzip-compressed).
+
+    nrows : int, default None
+        Number of rows to read. Default None (all).
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    Columns: Chromosome, Start, End, Name, Score, Strand, SignalValue, PValue, QValue:
+    narrowPeak without the summit, as MACS2/MACS3 write broad peaks. Leading track,
+    browser and ``#`` lines are skipped.
+
+    See Also
+    --------
+    pyranges1.read_narrowPeak : read a narrowPeak file
+    pyranges1.read_gappedPeak : read a gappedPeak file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".broadPeak")
+    >>> _ = tmp.write("chr1\t100\t900\tbroad1\t500\t.\t2.5\t6.1\t4.0\n")
+    >>> tmp.flush()
+    >>> gr = pr.read_broadPeak(tmp.name)
+    >>> list(gr.columns)
+    ['Chromosome', 'Start', 'End', 'Name', 'Score', 'Strand', 'SignalValue', 'PValue', 'QValue']
+    >>> gr["SignalValue"].tolist()
+    [2.5]
+
+    """
+    return _read_peaks(f, _BROADPEAK_COLUMNS, nrows, "broadPeak", storage_options)
+
+
+def read_gappedPeak(f: "str | Path", /, nrows: int | None = None, *, storage_options: dict | None = None) -> "PyRanges":  # noqa: N802
+    r"""Return ENCODE gappedPeak (BED12+3) file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to gappedPeak file (may be gzip-compressed).
+
+    nrows : int, default None
+        Number of rows to read. Default None (all).
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    Columns: the twelve BED columns (Chromosome ... BlockStarts), then SignalValue,
+    PValue, QValue. Each row is a broad peak with its narrow peaks as blocks, as MACS2
+    writes them with --broad. Leading track, browser and ``#`` lines are skipped.
+
+    See Also
+    --------
+    pyranges1.read_broadPeak : read a broadPeak file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".gappedPeak")
+    >>> _ = tmp.write("chr1\t100\t500\tg1\t0\t+\t100\t500\t0\t2\t50,60,\t0,340,\t1.2\t3.0\t4.0\n")
+    >>> tmp.flush()
+    >>> gr = pr.read_gappedPeak(tmp.name)
+    >>> gr["BlockCount"].tolist(), gr["BlockSizes"].tolist(), gr["BlockStarts"].tolist(), gr["QValue"].tolist()
+    ([2], ['50,60,'], ['0,340,'], [4.0])
+
+    """
+    return _read_peaks(f, _GAPPEDPEAK_COLUMNS, nrows, "gappedPeak", storage_options)
+
+
+def read_parquet(
+    f: "str | Path",
+    /,
+    columns: list[str] | None = None,
+    **kwargs,
+) -> "PyRanges":
+    """Return a Parquet file as PyRanges.
+
+    Parquet preserves column dtypes and loads much faster than CSV-based formats.
+    Any Parquet file with at least ``Chromosome``, ``Start``, ``End`` columns can
+    be read; use :meth:`PyRanges.to_parquet` to write one.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to the Parquet file.
+
+    columns : list of str, optional
+        Subset of columns to load. None (default) loads all columns. Must include
+        at least Chromosome, Start, End.
+
+    **kwargs
+        Forwarded to :func:`pandas.read_parquet` (e.g. ``engine``, ``filters``).
+
+    Returns
+    -------
+    PyRanges
+
+    Notes
+    -----
+    This functionality requires a Parquet engine, e.g. ``pyarrow``
+    (``pip install pyarrow``). ``Chromosome`` and ``Strand`` are restored as
+    ``category`` dtype if they are not already categorical.
+
+    See Also
+    --------
+    PyRanges.to_parquet : write a PyRanges to Parquet
+
+    Examples
+    --------
+    >>> import pyranges1 as pr  # doctest: +SKIP
+    >>> pr.read_parquet("intervals.parquet")  # doctest: +SKIP
+
+    """
+    try:
+        df = pd.read_parquet(f if _is_url(f) else Path(f), columns=columns, **kwargs)
+    except ImportError:
+        msg = "A Parquet engine must be installed to read Parquet files. Use `pip install pyarrow` to install one."
+        raise ImportError(msg) from None
+
+    for col in ("Chromosome", "Strand"):
+        if col in df.columns and not isinstance(df[col].dtype, pd.CategoricalDtype):
+            df[col] = df[col].astype("category")
+
+    return ensure_pyranges(df)
+
+
+def _flatten_vcf_info(value: object) -> object:
+    """Collapse a multi-valued VCF INFO field (a tuple) to a comma-joined string."""
+    if isinstance(value, (tuple, list)):
+        return ",".join("" if v is None else str(v) for v in value)
+    return value
+
+
+def read_chain(f: "str | Path", /) -> "PyRanges":
+    r"""Return a UCSC chain file (liftOver) as PyRanges, one row per gapless block.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to the chain file, e.g. hg19ToHg38.over.chain.gz (may be gzip-compressed).
+
+    Returns
+    -------
+    PyRanges
+        Chromosome, Start, End: the block on the assembly lifted from. QueryChromosome,
+        QueryStart, QueryEnd: the same bases on the assembly lifted to, in forward-strand
+        coordinates also on a "-" chain. QueryStrand, ChainId, ChainScore.
+
+    See Also
+    --------
+    PyRanges.liftover_ranges : lift intervals through a chain
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".chain")
+    >>> _ = tmp.write("chain 100 chr1 1000 + 100 300 chrA 2000 + 500 710 1\n50 30 40\n120\n\n")
+    >>> tmp.flush()
+    >>> pr.read_chain(tmp.name)[["Start", "End", "QueryChromosome", "QueryStart", "QueryEnd"]]
+       Start  End QueryChromosome  QueryStart  QueryEnd
+    0    100  150            chrA         500       550
+    1    180  300            chrA         590       710
+
+    """
+    from pyranges1.methods.liftover import _read_chain
+
+    return _read_chain(f)
+
+
+def read_vcf(
+    f: "str | Path",
+    /,
+    region: str | None = None,
+    nrows: int | None = None,
+    info_fields: list[str] | None = None,
+) -> "PyRanges":
+    """Return a VCF/BCF file as PyRanges.
+
+    Each variant becomes one row spanning its REF allele: ``Start`` is the 0-based
+    position (``POS - 1``) and ``End = Start + len(REF)``. Multi-allelic records
+    keep their ALT alleles comma-joined in a single row.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to a VCF / VCF.gz / BCF file.
+
+    region : str, optional
+        Restrict to a region, e.g. ``"chr1:1000-2000"`` (requires a tabix/CSI index).
+
+    nrows : int, optional
+        Stop after this many records. Default None (all).
+
+    info_fields : list of str, optional
+        Which INFO fields to expand into columns. None (default) expands every
+        INFO field present; pass an explicit list (possibly empty) to restrict.
+
+    Returns
+    -------
+    PyRanges
+        Columns: Chromosome, Start, End, ID, REF, ALT, QUAL, FILTER, plus one
+        column per requested INFO field.
+
+    Notes
+    -----
+    This functionality requires the library ``pysam`` (``pip install pysam`` or
+    ``conda install -c bioconda pysam``).
+
+    Examples
+    --------
+    >>> import pyranges1 as pr  # doctest: +SKIP
+    >>> pr.read_vcf("variants.vcf.gz", region="chr1:1-100000")  # doctest: +SKIP
+
+    """
+    try:
+        import pysam  # type: ignore[import]
+    except ImportError:
+        msg = (
+            "pysam must be installed to read VCF/BCF files. "
+            "Use `conda install -c bioconda pysam` or `pip install pysam`."
+        )
+        raise ImportError(msg) from None
+
+    vf = pysam.VariantFile(str(Path(f)))
+    iterator = vf.fetch(region=region) if region else vf
+
+    chroms: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    ids: list[str | None] = []
+    refs: list[str] = []
+    alts: list[str | None] = []
+    quals: list[float | None] = []
+    filters: list[str] = []
+    info_cols: dict[str, list] = {}
+
+    for n, rec in enumerate(iterator):
+        if nrows is not None and n >= nrows:
+            break
+        chroms.append(rec.chrom)
+        starts.append(int(rec.start))
+        ends.append(int(rec.stop))
+        ids.append(rec.id)
+        refs.append(rec.ref or "")
+        alts.append(",".join(a for a in rec.alts if a is not None) if rec.alts else None)
+        quals.append(rec.qual)
+        filters.append(",".join(str(k) for k in rec.filter) if rec.filter else "PASS")
+
+        keys = info_fields if info_fields is not None else list(rec.info.keys())
+        for k in keys:
+            info_cols.setdefault(k, [None] * n).append(
+                _flatten_vcf_info(rec.info[k]) if k in rec.info else None,
+            )
+        for k, col in info_cols.items():
+            if k not in keys:
+                col.append(None)
+
+    df = pd.DataFrame(
+        {
+            "Chromosome": pd.Categorical(chroms),
+            "Start": starts,
+            "End": ends,
+            "ID": ids,
+            "REF": refs,
+            "ALT": alts,
+            "QUAL": quals,
+            "FILTER": pd.Categorical(filters),
+        },
+    )
+    for k, v in info_cols.items():
+        df[k] = v
+
+    return ensure_pyranges(df)
+
+
+def read_bedgraph(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":
+    r"""Return bedGraph file as PyRanges.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to bedGraph file (may be gzip-compressed).
+
+    nrows : int, default None
+        Number of rows to read. Default None (all).
+
+    Returns
+    -------
+    PyRanges
+        Columns Chromosome, Start, End and Value (float64). Leading track, browser and
+        ``#`` lines are skipped.
+
+    See Also
+    --------
+    PyRanges.to_bedgraph : write a bedGraph file
+    pyranges1.read_wig : read a WIG file
+    pyranges1.read_bigwig : read a bigWig file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".bedGraph")
+    >>> _ = tmp.write("track type=bedGraph\nchr1\t0\t10\t1.5\nchr1\t10\t25\t3\n")
+    >>> tmp.flush()
+    >>> gr = pr.read_bedgraph(tmp.name)
+    >>> list(gr.columns), gr["Value"].tolist()
+    (['Chromosome', 'Start', 'End', 'Value'], [1.5, 3.0])
+
+    """
+    from pyranges1.methods.signal_formats import _read_bedgraph
+
+    return _read_bedgraph(f, nrows)
+
+
+def read_wig(f: "str | Path", /) -> "PyRanges":
+    r"""Return WIG (wiggle) file as PyRanges.
+
+    Reads fixedStep and variableStep sections into one interval per value, converting
+    WIG's 1-based positions to 0-based, half-open intervals. A fixedStep section without
+    a span covers each whole step, as UCSC's wigToBigWig reads it.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to WIG file (may be gzip-compressed).
+
+    Returns
+    -------
+    PyRanges
+        Columns Chromosome, Start, End and Value (float64).
+
+    See Also
+    --------
+    pyranges1.read_bedgraph : read a bedGraph file
+    pyranges1.read_bigwig : read a bigWig file
+
+    Examples
+    --------
+    >>> import pyranges1 as pr
+    >>> from tempfile import NamedTemporaryFile
+    >>> tmp = NamedTemporaryFile("w", suffix=".wig")
+    >>> _ = tmp.write("variableStep chrom=chr1 span=5\n101\t2\nfixedStep chrom=chr2 start=11 step=10\n0.5\n1\n")
+    >>> tmp.flush()
+    >>> gr = pr.read_wig(tmp.name)
+    >>> list(zip(gr["Chromosome"], gr["Start"], gr["End"], gr["Value"]))
+    [('chr1', 100, 105, 2.0), ('chr2', 10, 20, 0.5), ('chr2', 20, 30, 1.0)]
+
+    """
+    from pyranges1.methods.signal_formats import _read_wig
+
+    return _read_wig(f)

@@ -16,6 +16,14 @@ class PyRangesOptions:
                 None,
                 "max n. of rows shown as HTML (e.g. Jupyter). If undefined, max_rows_to_show is used",
             ),
+            # An option rather than a reader argument on purpose. The readers
+            # mirror polaranges', which reads through Polars and has no pyarrow
+            # to switch, so a `use_pyarrow` parameter would be a pyranges1-only
+            # argument on a shared signature. Options are free to differ.
+            "use_pyarrow": (
+                None,
+                "use pyarrow to parse BED/GTF/GFF3 when installed (None: auto, False: force pandas)",
+            ),
         }
         self.options_default = self.options_in_use.copy()
 
@@ -109,6 +117,7 @@ class PyRangesOptions:
         console_width            :  120 (console width, affecting PyRanges representation (None for auto))
         html_max_cols            :   20 (max number of columns to show as HTML (e.g. Jupyter), others are hidden)
         html_max_rows            : None (max n. of rows shown as HTML (e.g. Jupyter). If undefined, max_rows_to_show is used)
+        use_pyarrow              : None (use pyarrow to parse BED/GTF/GFF3 when installed (None: auto, False: force pandas))
 
         """
         max_len_k = max(len(k) for k in self.options_in_use)

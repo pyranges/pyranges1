@@ -30,12 +30,10 @@ def test_write_gtf_no_path(chip_10) -> None:
 
 
 def test_write_bigwig(chip_10, tmp_path, chromsizes) -> None:
-    try:
-        outfile = tmp_path / "deleteme.bigwig"
-        outpath = str(outfile)
-        chip_10.to_bigwig(outpath, chromosome_sizes=chromsizes)
-    except SystemExit:
-        pass
+    pytest.importorskip("pyBigWig")
+    outfile = tmp_path / "deleteme.bigwig"
+    outpath = str(outfile)
+    chip_10.to_bigwig(outpath, chromosome_sizes=chromsizes)
 
 
 def test_to_bigwig_divide_keeps_single_run_tracks() -> None:
@@ -102,6 +100,21 @@ def test_to_bigwig_divide_merges_adjacent_equal_runs() -> None:
     assert result["Start"].tolist() == [0]
     assert result["End"].tolist() == [8]
     assert result["Score"].tolist() == [1.0]
+
+
+def test_to_bigwig_sizes_default_to_the_data(tmp_path) -> None:
+    pyBigWig = pytest.importorskip("pyBigWig")
+    gr = pr.PyRanges({"Chromosome": ["chr1", "contig7"], "Start": [10, 0], "End": [50, 30]})
+    path = str(tmp_path / "default_sizes.bw")
+    gr.to_bigwig(path)
+    assert pyBigWig.open(path).chroms() == {"chr1": 50, "contig7": 30}
+
+
+def test_to_bigwig_names_chromosomes_missing_from_the_sizes(tmp_path) -> None:
+    pytest.importorskip("pyBigWig")
+    gr = pr.PyRanges({"Chromosome": ["chr1", "contig7"], "Start": [10, 0], "End": [50, 30]})
+    with pytest.raises(ValueError, match="contig7"):
+        gr.to_bigwig(str(tmp_path / "missing.bw"), chromosome_sizes={"chr1": 1000})
 
 
 def test_to_bigwig_precomputed_does_not_materialize_float_rounding_gaps(tmp_path) -> None:
