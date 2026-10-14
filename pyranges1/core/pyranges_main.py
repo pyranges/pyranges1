@@ -840,7 +840,7 @@ class PyRanges(RangeFrame):
 
         Each output interval is a maximal stretch covered by the same number of intervals
         (or, with value_col, the same sum of that column); stretches with no coverage are
-        left out. No pyrle needed.
+        left out. Requires runlength.
 
         Parameters
         ----------
@@ -864,7 +864,7 @@ class PyRanges(RangeFrame):
 
         See Also
         --------
-        PyRanges.to_rle : coverage as pyrle run-length vectors
+        PyRanges.to_rle : coverage as runlength run-length vectors
         PyRanges.merge_overlaps : the covered regions, without depth
 
         Examples
