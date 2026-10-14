@@ -69,7 +69,7 @@ from pyranges1.range_frame.range_frame_validator import InvalidRangesReason
 
 if TYPE_CHECKING:
     import pyfaidx  # type: ignore[import]
-    from pyrle.rledict import Rledict  # type: ignore[import]
+    from runlength import RleBatch  # type: ignore[import-not-found]
 
 
 __all__ = ["PyRanges"]
@@ -4172,7 +4172,7 @@ class PyRanges(RangeFrame):
         Note
         ----
 
-        Requires pybigwig and pyrle to be installed.
+        Requires pybigwig and runlength to be installed.
 
 
         Examples
@@ -4490,109 +4490,68 @@ class PyRanges(RangeFrame):
         strand: VALID_USE_STRAND_TYPE = "auto",
         *,
         rpm: bool = False,
-    ) -> "Rledict":
-        """Return as Rledict.
+    ) -> "RleBatch":
+        """Return the coverage, or the sum of a numerical column, as run-length encoded sequences.
 
-        Create collection of Rles representing the coverage or other numerical value.
+        Requires runlength to be installed.
 
         Parameters
         ----------
         value_col : str, default None
-            Numerical column to create Rledict from.
+            Numerical column to sum over the intervals covering each position.
+            By default, count the intervals.
 
         strand : bool, default None, i.e. auto
-            Whether to treat strands serparately.
+            Whether to treat strands separately.
 
         rpm : bool, default False
             Normalize by multiplying with `1e6/(number_intervals)`.
 
         Returns
         -------
-        pyrle.Rledict
+        runlength.RleBatch
 
-            Rle with coverage or other info from the PyRanges.
+            One sequence per chromosome, or per chromosome and strand, starting
+            at position 0. Positions no interval covers are 0.
 
-        """
-        broken_examples = (  # noqa:F841
-            """
+        See Also
+        --------
+        PyRanges.to_bigwig : write the coverage to a bigwig file
 
         Examples
         --------
-        # >>> d = {'Chromosome': ['chr1', 'chr1', 'chr1'], 'Start': [3, 8, 5],
-        # ...      'End': [6, 9, 7], 'Score': [0.1, 5, 3.14], 'Strand': ['+', '+', '-']}
-        # >>> gr = pr.PyRanges(d)
-        # >>> gr.to_rle()
-        # chr1 +
-        # --
-        # +--------+-----+-----+-----+-----+
-        # | Runs   | 3   | 3   | 2   | 1   |
-        # |--------+-----+-----+-----+-----|
-        # | Values | 0.0 | 1.0 | 0.0 | 1.0 |
-        # +--------+-----+-----+-----+-----+
-        # Rle of length 9 containing 4 elements (avg. length 2.25)
-        # <BLANKLINE>
-        # chr1 -
-        # --
-        # +--------+-----+-----+
-        # | Runs   | 5   | 2   |
-        # |--------+-----+-----|
-        # | Values | 0.0 | 1.0 |
-        # +--------+-----+-----+
-        # Rle of length 7 containing 2 elements (avg. length 3.5)
-        # RleDict object with 2 chromosomes/strand pairs.
+        >>> d = {'Chromosome': ['chr1', 'chr1', 'chr1'], 'Start': [3, 8, 5],
+        ...      'End': [6, 9, 7], 'Score': [0.1, 5, 3.14], 'Strand': ['+', '+', '-']}
+        >>> gr = pr.PyRanges(d)
+        >>> gr.to_rle()
+        RleBatch(keys=2, runs=6, dtype=Int64)
+          ('chr1', '+'): length=9, values=[0, 1, 0, 1]
+          ('chr1', '-'): length=7, values=[0, 1]
 
-        # >>> gr.to_rle(value_col="Score")
-        # chr1 +
-        # --
-        # +--------+-----+-----+-----+-----+
-        # | Runs   | 3   | 3   | 2   | 1   |
-        # |--------+-----+-----+-----+-----|
-        # | Values | 0.0 | 0.1 | 0.0 | 5.0 |
-        # +--------+-----+-----+-----+-----+
-        # Rle of length 9 containing 4 elements (avg. length 2.25)
-        # <BLANKLINE>
-        # chr1 -
-        # --
-        # +--------+-----+------+
-        # | Runs   | 5   | 2    |
-        # |--------+-----+------|
-        # | Values | 0.0 | 3.14 |
-        # +--------+-----+------+
-        # Rle of length 7 containing 2 elements (avg. length 3.5)
-        # RleDict object with 2 chromosomes/strand pairs.
+        >>> gr.to_rle().to_pandas()
+          Chromosome Strand  start  end  value
+        0       chr1      +      0    3      0
+        1       chr1      +      3    6      1
+        2       chr1      +      6    8      0
+        3       chr1      +      8    9      1
+        4       chr1      -      0    5      0
+        5       chr1      -      5    7      1
 
-        # >>> gr.to_rle(value_col="Score", strand=False)
-        # chr1
-        # +--------+-----+-----+------+------+-----+-----+
-        # | Runs   | 3   | 2   | 1    | 1    | 1   | 1   |
-        # |--------+-----+-----+------+------+-----+-----|
-        # | Values | 0.0 | 0.1 | 3.24 | 3.14 | 0.0 | 5.0 |
-        # +--------+-----+-----+------+------+-----+-----+
-        # Rle of length 9 containing 6 elements (avg. length 1.5)
-        # Unstranded Rledict object with 1 chromosome.
+        >>> gr.to_rle("Score", strand=False).to_pandas()
+          Chromosome  start  end  value
+        0       chr1      0    3   0.00
+        1       chr1      3    5   0.10
+        2       chr1      5    6   3.24
+        3       chr1      6    7   3.14
+        4       chr1      7    8   0.00
+        5       chr1      8    9   5.00
 
-        # >>> gr.to_rle(rpm=True)
-        # chr1 +
-        # --
-        # +--------+-----+-------------------+-----+-------------------+
-        # | Runs   | 3   | 3                 | 2   | 1                 |
-        # |--------+-----+-------------------+-----+-------------------|
-        # | Values | 0.0 | 333333.3333333333 | 0.0 | 333333.3333333333 |
-        # +--------+-----+-------------------+-----+-------------------+
-        # Rle of length 9 containing 4 elements (avg. length 2.25)
-        # <BLANKLINE>
-        # chr1 -
-        # --
-        # +--------+-----+-------------------+
-        # | Runs   | 5   | 2                 |
-        # |--------+-----+-------------------|
-        # | Values | 0.0 | 333333.3333333333 |
-        # +--------+-----+-------------------+
-        # Rle of length 7 containing 2 elements (avg. length 3.5)
-        # Rledict object with 2 chromosomes/strand pairs.
+        >>> gr.to_rle(rpm=True).get(("chr1", "-"))
+        Rle(length=7, runs=2, dtype=Float64)
+          runs:   [5, 2]
+          values: [0.0, 333333.3333333333]
+
         """
-        )
-
         if strand is None:
             strand = self.strand_valid
 
