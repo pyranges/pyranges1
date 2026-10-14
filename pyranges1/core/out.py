@@ -382,6 +382,12 @@ def _to_peaks(
     """Write an ENCODE peak file with these columns, filling missing ones with the formats' defaults."""
     defaults: dict[str, object] = dict(_PEAK_DEFAULTS)
     if "BlockCount" in columns:  # gappedPeak: one block spanning each peak, unless there are blocks
+        block_columns = ["BlockCount", "BlockSizes", "BlockStarts"]
+        present = [c for c in block_columns if c in self.columns]
+        if present and len(present) < len(block_columns):
+            # Filling the others with one whole-peak block would contradict the given ones.
+            msg = f"gappedPeak blocks need all of {block_columns}, or none; got only {present}."
+            raise ValueError(msg)
         defaults |= {
             "ThickStart": self[START_COL],
             "ThickEnd": self[END_COL],

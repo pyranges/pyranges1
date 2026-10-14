@@ -55,3 +55,20 @@ def test_peak_readers_skip_track_lines_and_refuse_other_formats(tmp_path) -> Non
     assert pr.read_narrowPeak(path)["Name"].tolist() == ["p"]
     with pytest.raises(ValueError, match="broadPeak file has 9"):
         pr.read_broadPeak(path)
+
+
+def test_gappedpeak_refuses_some_block_columns_without_the_others() -> None:
+    gr = pr.PyRanges({"Chromosome": ["chr1"], "Start": [100], "End": [200], "BlockCount": [2]})
+    with pytest.raises(ValueError, match="BlockSizes"):
+        gr.to_gappedPeak()
+
+
+def test_peak_readers_read_urls(tmp_path) -> None:
+    fsspec = pytest.importorskip("fsspec")
+    for kind in ("narrowPeak", "broadPeak", "gappedPeak"):
+        text = getattr(PEAKS, f"to_{kind}")()
+        with fsspec.open(f"memory://peaks/x.{kind}", "w") as fh:
+            fh.write(text)
+        (tmp_path / f"x.{kind}").write_text(text)
+        read = getattr(pr, f"read_{kind}")
+        pd.testing.assert_frame_equal(read(f"memory://peaks/x.{kind}"), read(tmp_path / f"x.{kind}"))
