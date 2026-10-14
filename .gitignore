@@ -2,6 +2,16 @@ docs/chipseq.csv
 docs/chipseq.gtf
 docs/test.bed
 
+# files the doctests write into the repo root when run from there
+/chipseq.csv
+/chipseq.gtf
+/test.bed
+/outfile.fasta
+/temp*.fasta
+/temp*.fasta.fai
+/Dgyro.taa_CDS.gtf
+/Dgyro_taa_CDS_seqs.tsv
+
 *.swp
 .snakemake/
 wheelhouse/
