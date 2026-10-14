@@ -13,7 +13,7 @@ from pyranges1.core.pyranges_helpers import ensure_pyranges
 from pyranges1.core.pyranges_main import PyRanges
 
 if TYPE_CHECKING:
-    from pyrle import RleDict  # type: ignore[import]
+    from runlength import RleBatch  # type: ignore[import-not-found]
 
 GTF_COLUMNS_TO_PYRANGES = {
     "seqname": "Chromosome",
@@ -174,35 +174,17 @@ def _to_bed(
     )
 
 
-def _merged_runs(rles: "RleDict") -> "RleDict":
-    """Merge consecutive runs holding the same value, in every track.
+def _nonzero_runs(rles: "RleBatch") -> pd.DataFrame:
+    """Return the runs of every track as Chromosome, Start, End and Score, without zero-valued runs."""
+    runs = rles.to_pandas().rename(columns={"start": START_COL, "end": END_COL, "value": BIGWIG_SCORE_COL})
+    runs = runs.astype({CHROM_COL: "category", BIGWIG_SCORE_COL: np.float64})
+    return runs[runs[BIGWIG_SCORE_COL] != 0]
 
-    This is what ``pyrle``'s ``defragment`` is for, but that implementation
-    zeroes the value whenever the merged result collapses to a single run --
-    ``Rle([5], [3.0]).defragment()`` yields a value of ``0.0``. Since
-    ``to_ranges`` then discards zero-valued runs as uncovered, relying on it
-    silently deletes any track that reduces to one run.
 
-    ``NaN`` is treated as equal to ``NaN`` so that adjacent undefined runs
-    merge, matching ``defragment``'s behaviour on inputs where it is correct.
-    """
-    from pyrle import Rle, RleDict
-
-    merged = {}
-    for chromosome, rle in rles.items():
-        runs = np.asarray(rle.runs)
-        values = np.asarray(rle.values, dtype=float)
-        if values.size <= 1:
-            merged[chromosome] = Rle(runs.copy(), values.copy())
-            continue
-        previous, current = values[:-1], values[1:]
-        same = (current == previous) | (np.isnan(current) & np.isnan(previous))
-        starts = np.concatenate(([0], np.flatnonzero(~same) + 1))
-        merged_values = values[starts]
-        # `defragment` normalises negative zero; keep that.
-        merged_values[merged_values == 0] = 0.0
-        merged[chromosome] = Rle(np.add.reduceat(runs, starts), merged_values)
-    return RleDict(merged)
+def _log2(values: np.ndarray) -> np.ndarray:
+    # Callbacks run on worker threads, where numpy's error state is the default.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.log2(values)
 
 
 def _to_bigwig(
@@ -213,34 +195,37 @@ def _to_bigwig(
     *,
     divide: bool = False,
     rpm: bool = True,
+    precomputed: bool = False,
     return_data: bool = False,
 ) -> PyRanges | None:
     try:
         import pyBigWig  # type: ignore[import]
     except ModuleNotFoundError:
-        LOGGER.exception(
-            "pybigwig must be installed to create bigwigs. Use `conda install -c bioconda pybigwig` or `pip install pybigwig` to install it.",
-        )
-        import sys
+        msg = "pybigwig must be installed to create bigwigs. Use `conda install -c bioconda pybigwig` or `pip install pybigwig` to install it."
+        raise ImportError(msg) from None
 
-        sys.exit(1)
-
-    if not divide:
-        rles = self.to_rle(rpm=rpm, strand=False, value_col=value_col)
-        df = rles.to_ranges()
+    if precomputed:
+        if value_col is None:
+            msg = "precomputed=True requires value_col."
+            raise ValueError(msg)
+        if divide:
+            msg = "divide=True is incompatible with precomputed=True."
+            raise ValueError(msg)
+        df = self.get_with_loc_columns(value_col).rename(columns={value_col: BIGWIG_SCORE_COL})
+    elif not divide:
+        df = _nonzero_runs(self.to_rle(rpm=rpm, strand=False, value_col=value_col))
     else:
-        numerator = self.to_rle(rpm=rpm, strand=False, value_col=value_col)
-        denominator = self.to_rle(rpm=rpm, strand=False)
-        ratio = numerator / denominator
-        for rle in ratio.values():
-            rle.values = np.log2(rle.values)
-        df = _merged_runs(ratio).to_ranges()
+        # rpm scales numerator and denominator alike, so it cancels in the ratio;
+        # scaling first would only add rounding noise that splits equal ratios.
+        numerator = self.to_rle(strand=False, value_col=value_col)
+        denominator = self.to_rle(strand=False)
+        ratio = (numerator / denominator).map(_log2, backend="numpy")
+        df = _nonzero_runs(ratio)
     gr = ensure_pyranges(df)
-    unique_chromosomes = gr.chromosomes
-
     gr = gr.remove_strand()
     gr = gr.sort_ranges()
     gr = gr.get_with_loc_columns(BIGWIG_SCORE_COL)
+    unique_chromosomes = gr.chromosomes
 
     if return_data:
         return gr
@@ -249,15 +234,19 @@ def _to_bigwig(
         size_df = chromosome_sizes
         chromosome_sizes = dict(zip(size_df[CHROM_COL], size_df[END_COL], strict=True))
 
+    missing = [c for c in unique_chromosomes if c not in chromosome_sizes]
+    if missing:
+        msg = f"chromosome_sizes has no size for {missing}."
+        raise ValueError(msg)
     header = [(c, int(chromosome_sizes[c])) for c in unique_chromosomes]
 
     bw = pyBigWig.open(path, "w")
     bw.addHeader(header)
 
-    chromosomes = df[CHROM_COL].tolist()
-    starts = df[START_COL].tolist()
-    ends = df[END_COL].tolist()
-    values = df.Score.tolist()
+    chromosomes = gr[CHROM_COL].tolist()
+    starts = gr[START_COL].tolist()
+    ends = gr[END_COL].tolist()
+    values = gr[BIGWIG_SCORE_COL].tolist()
 
     bw.addEntries(chromosomes, starts, ends=ends, values=values)
 
@@ -488,12 +477,8 @@ def _to_bigbed(
     try:
         import pybigtools  # type: ignore[import]
     except ImportError:
-        LOGGER.exception(
-            "pybigtools must be installed to write BigBed files. Use `pip install pybigtools` to install it.",
-        )
-        import sys
-
-        sys.exit(1)
+        msg = "pybigtools must be installed to write BigBed files. Use `pip install pybigtools` to install it."
+        raise ImportError(msg) from None
 
     present_bed = [c for c in _BED_EXTRA_ORDER if c in self.columns]
     extras = [c for c in self.columns if c not in (CHROM_COL, START_COL, END_COL) and c not in present_bed]
@@ -519,7 +504,8 @@ def _to_bigbed(
         vals = zip(chroms, starts, ends, rest, strict=True)
         sql = autosql or _build_bigbed_autosql(rest_cols, [self[c].dtype for c in rest_cols])
     else:
-        vals = zip(chroms, starts, ends, strict=True)
+        # pybigtools takes (chrom, start, end, rest) even when there is no rest.
+        vals = zip(chroms, starts, ends, [""] * len(chroms), strict=True)
         sql = autosql
 
     ordered_sizes = {c: sizes[c] for c in sorted(sizes)}

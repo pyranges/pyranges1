@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyranges1"
-version = "1.4.3"
+version = "1.4.5"
 description = "GenomicRanges for Python."
 requires-python = ">=3.12.0"
 readme = "README.md"
@@ -47,7 +47,7 @@ remote = ["fsspec"]
 add-ons = [
     "pyranges1[fast-io]",
     "pyranges1[remote]",
-    "pyrle >= 0.0.43",
+    "runlength >= 0.1",
     "bamread",
     "pysam",
     "pyfaidx",
@@ -114,7 +114,7 @@ basepython =
     py313: python3.13
 deps =
     pandas
-    pyrle >= 0.0.41
+    runlength >= 0.1
     bamread
     pyBigWig
     pyfaidx
