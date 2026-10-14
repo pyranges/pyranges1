@@ -35,6 +35,9 @@ def _coverage_ranges(self: "PyRanges", by: list[str], value_col: str | None, cov
     sizes = np.array([rle.num_runs for _, rle in coverage.items()], dtype=np.int64)
     firsts = np.concatenate([[0], np.cumsum(sizes)[:-1]])
     order = runs.iloc[firsts][by].reset_index(drop=True).sort_values(by, kind="stable").index.to_numpy()
-    rows = np.concatenate([np.arange(firsts[i], firsts[i] + sizes[i]) for i in order])
+    # Row numbers of the blocks in that order: each block's first row, counted up through it.
+    ordered_sizes = sizes[order]
+    block_offsets = np.concatenate([[0], np.cumsum(ordered_sizes)[:-1]])
+    rows = np.repeat(firsts[order] - block_offsets, ordered_sizes) + np.arange(ordered_sizes.sum())
     runs = runs.iloc[rows]
     return ensure_pyranges(runs[runs[coverage_col] != 0][columns].reset_index(drop=True))
