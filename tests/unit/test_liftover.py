@@ -61,3 +61,24 @@ def test_liftover_split_and_chain_as_pyranges(chain_path) -> None:
     lifted, unmapped = gr.liftover_ranges(pr.read_chain(chain_path), return_unmapped=True)
     assert len(lifted) == 0
     assert unmapped["LiftReason"].tolist() == ["Split in new"]
+
+
+def test_liftover_keeps_user_columns_and_categorical_dtypes(tmp_path) -> None:
+    import pandas as pd
+
+    path = tmp_path / "toy.chain"
+    path.write_text("chain 100 chr1 1000 + 100 300 chrA 2000 + 500 710 1\n50 30 40\n120\n\n")
+    gr = pr.PyRanges(
+        {
+            "Chromosome": pd.Categorical(["chr1"]),
+            "Start": [110],
+            "End": [140],
+            "Strand": pd.Categorical(["+"]),
+            "__row__": ["mine"],
+        }
+    )
+    lifted = gr.liftover_ranges(path)
+    assert lifted["__row__"].tolist() == ["mine"]
+    assert isinstance(lifted["Chromosome"].dtype, pd.CategoricalDtype)
+    assert isinstance(lifted["Strand"].dtype, pd.CategoricalDtype)
+    assert lifted["Chromosome"].tolist() == ["chrA"]

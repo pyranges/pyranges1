@@ -69,10 +69,9 @@ def _liftover(self: "PyRanges", chain: "PyRanges", *, min_match: float) -> "tupl
     lifted rows and the rest, with a LiftReason as liftOver reports it.
     """
     rows = self.reset_index(drop=True)
-    rows["__row__"] = np.arange(len(rows))
-    pairs = rows[[CHROM_COL, START_COL, END_COL, "__row__"]].join_overlaps(
-        chain, strand_behavior="ignore", suffix="_chain"
-    )
+    # The row numbers go in a frame of their own, so no column of the user's is touched.
+    query = ensure_pyranges(rows[[CHROM_COL, START_COL, END_COL]].assign(__row__=np.arange(len(rows))))
+    pairs = query.join_overlaps(chain, strand_behavior="ignore", suffix="_chain")
     start = np.maximum(pairs[START_COL].to_numpy(np.int64), pairs[START_COL + "_chain"].to_numpy(np.int64))
     end = np.minimum(pairs[END_COL].to_numpy(np.int64), pairs[END_COL + "_chain"].to_numpy(np.int64))
     offset_start = start - pairs[START_COL + "_chain"].to_numpy(np.int64)
@@ -106,13 +105,18 @@ def _liftover(self: "PyRanges", chain: "PyRanges", *, min_match: float) -> "tupl
     lifted_rows = np.flatnonzero(n_passing == 1)
     chosen = passing.set_index("row").loc[lifted_rows]
     lifted = rows.iloc[lifted_rows].copy()
-    lifted[CHROM_COL] = chosen["to_chrom"].to_numpy()
+    to_chrom = chosen["to_chrom"].to_numpy()
+    # A categorical Chromosome stays categorical, with the new assembly's names.
+    is_categorical = isinstance(rows[CHROM_COL].dtype, pd.CategoricalDtype)
+    lifted[CHROM_COL] = pd.Categorical(to_chrom) if is_categorical else to_chrom
     lifted[START_COL] = chosen["to_start"].to_numpy()
     lifted[END_COL] = chosen["to_end"].to_numpy()
     if STRAND_COL in lifted.columns:
         strand = lifted[STRAND_COL].astype(object).to_numpy()
         flipped = np.where(strand == "+", "-", np.where(strand == "-", "+", strand))
-        lifted[STRAND_COL] = np.where(chosen["to_minus"].to_numpy(), flipped, strand)
+        new_strand = np.where(chosen["to_minus"].to_numpy(), flipped, strand)
+        strand_dtype = rows[STRAND_COL].dtype
+        lifted[STRAND_COL] = pd.Categorical(new_strand) if isinstance(strand_dtype, pd.CategoricalDtype) else new_strand
 
     unlifted = rows.iloc[np.flatnonzero(n_passing != 1)].copy()
     # liftOver's reasons: no chain at all; one chain covering too little of it; several
@@ -126,7 +130,4 @@ def _liftover(self: "PyRanges", chain: "PyRanges", *, min_match: float) -> "tupl
     original_index = self.index.to_numpy()
     lifted.index = original_index[lifted_rows]
     unlifted.index = original_index[np.flatnonzero(n_passing != 1)]
-    return (
-        ensure_pyranges(lifted.loc[:, lifted.columns != "__row__"]),
-        ensure_pyranges(unlifted.loc[:, unlifted.columns != "__row__"]),
-    )
+    return ensure_pyranges(lifted), ensure_pyranges(unlifted)
