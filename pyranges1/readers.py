@@ -1,7 +1,7 @@
+import itertools
 import logging
-import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import gtfreader
 import numpy as np
@@ -10,6 +10,7 @@ from natsort import natsorted  # type: ignore[import]
 
 from pyranges1.core.options import option_manager
 from pyranges1.core.pyranges_helpers import ensure_pyranges
+from pyranges1.core.remote import _is_url, _local_copy
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -64,7 +65,43 @@ def from_string(s: str) -> "PyRanges":
     return ensure_pyranges(df)
 
 
-def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
+def _read_bed_region(path: "str | Path", region: str, columns: list[str]) -> "PyRanges":
+    """Read the records of a tabix-indexed BED file that overlap `region`."""
+    try:
+        import pysam  # type: ignore[import]
+    except ImportError:
+        msg = "pysam must be installed to read a region of a BED file. Use `pip install pysam`."
+        raise ImportError(msg) from None
+    from io import StringIO
+
+    try:
+        tabix = pysam.TabixFile(str(path))
+    except OSError:
+        msg = f"{path}: region= needs a bgzip-compressed file with a .tbi or .csi index (`tabix -p bed`)."
+        raise ValueError(msg) from None
+    with tabix:
+        try:
+            lines = list(tabix.fetch(region=_without_commas(region)))
+        except ValueError:  # a chromosome the index does not have
+            lines = []
+        # With nothing in the region, the file's first record gives the columns and
+        # dtypes, so an empty result has the same shape as any other.
+        first = lines[:1] or list(itertools.islice(tabix.fetch(), 1))
+    if not first:
+        return ensure_pyranges(
+            pd.DataFrame({c: pd.Series(dtype="int64") for c in columns[:3]}).astype({"Chromosome": "category"})
+        )
+    names = columns[: len(first[0].split("\t"))]
+    df = pd.read_csv(StringIO("\n".join(lines or first)), sep="\t", header=None, names=names)
+    if not lines:
+        df = df.iloc[:0]
+    _as_sorted_categorical(df, ("Chromosome", "Strand"))
+    return ensure_pyranges(df)
+
+
+def read_bed(
+    f: Path, /, nrows: int | None = None, *, region: str | None = None, storage_options: dict | None = None
+) -> "PyRanges":
     """Return bed file as PyRanges.
 
     This is a reader for files that follow the bed format. They can have from
@@ -80,6 +117,17 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
 
     nrows : Optional int, default None
         Number of rows to return.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
+        Needs a bgzip-compressed file with a tabix (.tbi or .csi) index, and pysam.
+        With a URL, only the region is fetched; as with samtools, htslib saves a copy
+        of the remote index in the working directory.
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Notes
     -----
@@ -127,27 +175,33 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
         "BlockSizes",
         "BlockStarts",
     ]
-    path = Path(f)
-    if path.name.endswith(".gz"):
-        import gzip
+    # Before the URL branch: pysam reads a remote tabix file through its index
+    # instead of copying it.
+    if region is not None:
+        return _read_bed_region(str(f) if _is_url(f) else Path(f), region, columns)
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_bed(local, nrows=nrows)
 
-        first_start = gzip.open(path).readline().decode().split()[1]  # noqa: SIM115
-    else:
-        first_start = path.open().readline().split()[1]
+    path = Path(f)
+    skip, first_fields, compressed = _bed_preamble(path)
 
     header = None
 
     try:
-        int(first_start)
+        int(first_fields[1])
     except ValueError:
         header = 0
 
-    ncols = pd.read_table(path, nrows=2).shape[1]
+    ncols = len(first_fields)
     names = columns[:ncols] if header != 0 else None
 
     # `nrows` stays on the pandas path: pyarrow.csv has no row limit, so reading
     # the whole file to throw most of it away would be slower, not faster.
-    df = None if nrows is not None else _read_bed_pyarrow(path, names=names, header=header)
+    # pyarrow recognises gzip by a .gz suffix only, so other compressed files
+    # (.bgz) go to pandas, which is told.
+    fast = nrows is None and not (compressed and not path.name.endswith(".gz"))
+    df = _read_bed_pyarrow(path, names=names, header=header, skip_rows=skip) if fast else None
     if df is None:
         df = pd.read_csv(
             path,
@@ -156,6 +210,8 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
             header=header,
             names=names,
             sep="\t",
+            skiprows=skip,
+            compression="gzip" if compressed else "infer",
         )
 
     df.columns = pd.Index(columns[: df.shape[1]])
@@ -166,6 +222,24 @@ def read_bed(f: Path, /, nrows: int | None = None) -> "PyRanges":
     _as_sorted_categorical(df, ("Chromosome", "Strand"))
 
     return ensure_pyranges(df)
+
+
+def _bed_preamble(path: Path) -> tuple[int, list[str], bool]:
+    """Lines to skip before the data, the first data line's fields, and whether it is gzip-compressed.
+
+    UCSC files can open with ``track`` and ``browser`` lines, and any file with
+    ``#`` comments; they are skipped, as are blank lines. Compression is told by
+    the gzip magic bytes rather than the suffix, so ``.bgz`` files read too.
+    """
+    import gzip
+
+    with path.open("rb") as fh:
+        compressed = fh.read(2) == b"\x1f\x8b"
+    with gzip.open(path, "rt") if compressed else path.open() as fh:
+        for skip, line in enumerate(fh):
+            if line.strip() and not line.startswith(("track", "browser", "#")):
+                return skip, line.rstrip("\n").split("\t"), compressed
+    return 0, [], compressed
 
 
 def _pyarrow_csv() -> "tuple | None":
@@ -275,6 +349,7 @@ def _arrow_read_csv(
     dictionary_columns: "tuple[str, ...]" = (),
     integer_columns: "tuple[str, ...]" = (),
     skip_comment_lines: bool = False,
+    skip_rows: int = 0,
 ) -> "pa.Table | None":
     """Parse a tab-separated file with `pyarrow.csv`, or return None for pandas.
 
@@ -309,10 +384,10 @@ def _arrow_read_csv(
         **({"invalid_row_handler": _skip_comment_rows} if skip_comment_lines else {}),
     )
     read_options = (
-        pacsv.ReadOptions(column_names=column_names, use_threads=True)
+        pacsv.ReadOptions(column_names=column_names, use_threads=True, skip_rows=skip_rows)
         if column_names is not None
         # The file names its own columns; let pyarrow read them.
-        else pacsv.ReadOptions(use_threads=True)
+        else pacsv.ReadOptions(use_threads=True, skip_rows=skip_rows)
     )
 
     try:
@@ -368,6 +443,7 @@ def _read_bed_pyarrow(
     *,
     names: list[str] | None,
     header: int | None,
+    skip_rows: int = 0,
 ) -> "pd.DataFrame | None":
     """Read a BED file with `pyarrow.csv`, or return None to use pandas."""
     named = names if header != 0 and names is not None else []
@@ -376,6 +452,7 @@ def _read_bed_pyarrow(
         column_names=names if header != 0 else None,
         dictionary_columns=tuple(c for c in ("Chromosome", "Strand") if c in named),
         integer_columns=tuple(c for c in ("Start", "End") if c in named),
+        skip_rows=skip_rows,
     )
     return None if table is None else _arrow_to_pandas(table)
 
@@ -388,6 +465,7 @@ def read_bam(
     filter_flag: int = 1540,
     *,
     sparse: bool = True,
+    region: str | None = None,
 ) -> "PyRanges":
     """Return bam file as PyRanges.
 
@@ -411,6 +489,11 @@ def read_bam(
         Ignore reads with these flags. Default 1540, which means that either
         the read is unmapped, the read failed vendor or platfrom quality
         checks, or the read is a PCR or optical duplicate.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
+        Needs a .bai or .csi index, and pysam rather than bamread.
 
     Returns
     -------
@@ -443,14 +526,14 @@ def read_bam(
     Contains 1 chromosomes and 2 strands.
 
     """
+    if region is not None:
+        return _read_pysam_alignment(f, "rb", mapq, required_flag, filter_flag, None, sparse=sparse, region=region)
     path = Path(f)
     try:
         import bamread  # type: ignore[import]
     except ImportError:
-        LOGGER.exception(
-            "bamread must be installed to read bam. Use `conda install -c bioconda bamread` or `pip install bamread` to install it.",
-        )
-        sys.exit(1)
+        msg = "bamread must be installed to read bam. Use `conda install -c bioconda bamread` or `pip install bamread` to install it."
+        raise ImportError(msg) from None
 
     if bamread.__version__ in {
         "0.0.1",
@@ -463,10 +546,8 @@ def read_bam(
         "0.0.8",
         "0.0.9",
     }:
-        LOGGER.exception(
-            "bamread not recent enough. Must be 0.0.10 or higher. Use `conda install -c bioconda 'bamread>=0.0.10'` or `pip install bamread>=0.0.10` to install it.",
-        )
-        sys.exit(1)
+        msg = "bamread not recent enough. Must be 0.0.10 or higher. Use `conda install -c bioconda 'bamread>=0.0.10'` or `pip install bamread>=0.0.10` to install it."
+        raise ImportError(msg)
 
     if sparse:
         return ensure_pyranges(bamread.read_bam(path, mapq, required_flag, filter_flag))
@@ -481,6 +562,7 @@ def read_gtf(
     nrows: int | None = None,
     duplicate_attr: bool = False,
     ignore_bad: bool = False,
+    storage_options: dict | None = None,
 ) -> "PyRanges":
     r"""Read files in the Gene Transfer Format.
 
@@ -498,6 +580,10 @@ def read_gtf(
     ignore_bad : bool, default False
         Whether to ignore bad lines or raise an error.
 
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Returns
     -------
@@ -532,6 +618,9 @@ def read_gtf(
     Contains 1 chromosomes and 1 strands.
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_gtf(local, nrows=nrows, duplicate_attr=duplicate_attr, ignore_bad=ignore_bad)
     return read_gtf_full(
         Path(f),
         nrows=nrows,
@@ -660,9 +749,69 @@ def to_keys_and_values(line: str) -> dict[str, str]:
     return dict(it.split("=", 1) for it in line.rstrip("; ").split(";") if "=" in it)
 
 
+def read_gff(
+    f: str | Path,
+    /,
+    *,
+    nrows: int | None = None,
+    duplicate_attr: bool = False,
+    ignore_bad: bool = False,
+) -> "PyRanges":
+    """Read a GFF file, as GFF3 or as GTF/GFF2 depending on its content.
+
+    A ``##gff-version 3`` line, or ``key=value`` attributes on the first record,
+    mean GFF3, read with `read_gff3`; ``key "value"`` attributes mean GTF, read
+    with `read_gtf`.
+
+    Parameters
+    ----------
+    f : str or Path
+        Path to the GFF file, optionally gzip-compressed.
+
+    nrows : int, default None
+        Number of rows to read. Default None, i.e. all.
+
+    duplicate_attr : bool, default False
+        Passed to `read_gtf` when the file is read as GTF; ignored for GFF3.
+
+    ignore_bad : bool, default False
+        Passed to `read_gtf` when the file is read as GTF; ignored for GFF3.
+
+    Returns
+    -------
+    PyRanges
+
+    See Also
+    --------
+    pyranges1.read_gff3 : read GFF3 files
+    pyranges1.read_gtf : read GTF files
+
+    """
+    import gzip
+
+    path = Path(f)
+    with path.open("rb") as fh:
+        compressed = fh.read(2) == b"\x1f\x8b"
+    gff3 = False
+    with gzip.open(path, "rt") if compressed else path.open() as fh:
+        for line in fh:
+            if line.startswith("##gff-version"):
+                gff3 = line.split()[1:2] == ["3"]
+                break
+            if line.strip() and not line.startswith("#"):
+                attributes = line.rstrip("\n").split("\t")[8:9]
+                gff3 = bool(attributes) and "=" in attributes[0] and '"' not in attributes[0]
+                break
+    if gff3:
+        return read_gff3(path, nrows=nrows)
+    return read_gtf(path, nrows=nrows, duplicate_attr=duplicate_attr, ignore_bad=ignore_bad)
+
+
 def read_gff3(
     f: str | Path,
     nrows: int | None = None,
+    *,
+    storage_options: dict | None = None,
 ) -> "PyRanges":
     """Read files in the General Feature Format into a PyRanges.
 
@@ -673,6 +822,10 @@ def read_gff3(
 
     nrows : int, default None
         Number of rows to read. Default None, i.e. all.
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Returns
     -------
@@ -695,6 +848,9 @@ def read_gff3(
     pyranges1.read_gtf : read files in the Gene Transfer Format
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_gff3(local, nrows=nrows)
     path = Path(f)
 
     dtypes: Mapping = {"Chromosome": "category", "Feature": "category", "Strand": "category"}
@@ -719,6 +875,11 @@ def read_gff3(
     if table is not None:
         dfs = _gff3_frames_from_arrow(table, chunksize)
     else:
+        # Records end where a ##FASTA section begins; its sequence lines are not
+        # features. (They also send the pyarrow path here.)
+        fasta_at = _gff3_records_before_fasta(path)
+        if fasta_at is not None:
+            nrows = fasta_at if nrows is None else min(nrows, fasta_at)
         df_iter = pd.read_csv(
             path,
             comment="#",
@@ -752,6 +913,35 @@ def read_gff3(
     return ensure_pyranges(df)
 
 
+def _gff3_records_before_fasta(path: Path) -> int | None:
+    """Count the records before a ``##FASTA`` line; None when there is none.
+
+    Most GFF3 files have no FASTA section, and a byte search says so without
+    parsing lines; only a file that has one is read line by line.
+    """
+    import gzip
+
+    with path.open("rb") as fh:
+        compressed = fh.read(2) == b"\x1f\x8b"
+    opener = gzip.open if compressed else open
+    with opener(path, "rb") as fh:
+        tail = b""
+        while chunk := fh.read(1 << 24):
+            if b"##FASTA" in tail + chunk:
+                break
+            tail = chunk[-6:]
+        else:
+            return None
+    records = 0
+    with opener(path, "rb") as fh:
+        for line in fh:
+            if line.startswith(b"##FASTA"):
+                return records
+            if line.strip() and not line.startswith(b"#"):
+                records += 1
+    return None
+
+
 def _gff3_frames_from_arrow(table: "pa.Table", chunksize: int) -> list[pd.DataFrame]:
     """Expand attributes a chunk at a time, as the pandas path does.
 
@@ -772,13 +962,42 @@ def _gff3_frames_from_arrow(table: "pa.Table", chunksize: int) -> list[pd.DataFr
     return dfs
 
 
-def read_bigwig(f: str | Path) -> "PyRanges":
+def _without_commas(region: str) -> str:
+    """Drop the thousands separators samtools accepts in a region and pysam does not."""
+    chromosome, colon, span = region.rpartition(":")
+    return f"{chromosome}{colon}{span.replace(',', '')}" if colon else region
+
+
+def _parse_region(region: str, sizes: "Mapping[str, int]") -> tuple[str, int, int] | None:
+    """Parse a samtools-style region into (chromosome, start, end), 0-based and half-open.
+
+    ``"chr1"`` is the whole chromosome, ``"chr1:1000"`` runs from base 1000 to its
+    end, and ``"chr1:1,000-2,000"`` is bases 1000 to 2000 inclusive. None when the
+    file has no such chromosome.
+    """
+    chromosome, _, span = region.rpartition(":")
+    bounds = span.replace(",", "").split("-")
+    if not chromosome or not all(b.isdigit() for b in bounds if b) or len(bounds) > 2:  # noqa: PLR2004
+        chromosome, bounds = region, [""]
+    if chromosome not in sizes:
+        return None
+    size = sizes[chromosome]
+    start = int(bounds[0]) - 1 if bounds[0] else 0
+    end = int(bounds[1]) if len(bounds) == 2 and bounds[1] else size  # noqa: PLR2004
+    return chromosome, max(start, 0), min(end, size)
+
+
+def read_bigwig(f: str | Path, *, region: str | None = None) -> "PyRanges":
     """Read bigwig files into a PyRanges.
 
     Parameters
     ----------
     f : str
         Path to bw file.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
 
     Returns
     -------
@@ -810,13 +1029,25 @@ def read_bigwig(f: str | Path) -> "PyRanges":
     try:
         import pyBigWig  # type: ignore[import]
     except ModuleNotFoundError:
-        LOGGER.exception(
-            "pyBigWig must be installed to read bigwigs. Use `pip install pyBigWig` to install it.",
-        )
-        sys.exit(1)
+        msg = "pyBigWig must be installed to read bigwigs. Use `pip install pyBigWig` to install it."
+        raise ImportError(msg) from None
 
     path = Path(f)
     bw = pyBigWig.open(str(path))
+
+    if region is not None:
+        window = _parse_region(region, bw.chroms())
+        intervals = (bw.intervals(*window) or ()) if window is not None else ()
+        return ensure_pyranges(
+            pd.DataFrame(
+                {
+                    "Chromosome": pd.Categorical([window[0]] * len(intervals) if window else []),
+                    "Start": pd.Series([i[0] for i in intervals], dtype="int64"),
+                    "End": pd.Series([i[1] for i in intervals], dtype="int64"),
+                    "Value": pd.Series([i[2] for i in intervals], dtype="float64"),
+                }
+            )
+        )
 
     size = int(1e5)
     chromosomes = bw.chroms()
@@ -837,6 +1068,10 @@ def read_bigwig(f: str | Path) -> "PyRanges":
             intervals = bw.intervals(chromosome, start, end)
             if intervals is not None:
                 for s, e, v in intervals:
+                    # An interval that crosses into this window was already read
+                    # with the window it starts in.
+                    if s < start:
+                        continue
                     outstarts.append(s)
                     outends.append(e)
                     outvalues.append(v)
@@ -885,15 +1120,26 @@ _BIGBED_AUTOSQL_TO_PYRANGES = {
 }
 
 
+def _alignments(af: Any, f: "str | Path", region: str | None) -> Any:
+    """Iterate over the reads of an open pysam file, or over those overlapping `region`."""
+    if not region:
+        return af
+    if not af.has_index():
+        msg = f"{f}: region= needs a BAM or CRAM file with a .bai, .csi or .crai index (`samtools index`)."
+        raise ValueError(msg)
+    return af.fetch(region=_without_commas(region))
+
+
 def _read_pysam_alignment(
     f: "str | Path",
-    mode: Literal["r", "rc"],
+    mode: Literal["r", "rb", "rc"],
     mapq: int,
     required_flag: int,
     filter_flag: int,
     reference_filename: "str | Path | None",
     *,
     sparse: bool,
+    region: str | None = None,
 ) -> "PyRanges":
     """Read a SAM/CRAM file via pysam into a PyRanges.
 
@@ -906,11 +1152,11 @@ def _read_pysam_alignment(
     try:
         import pysam  # type: ignore[import]
     except ImportError:
-        LOGGER.exception(
+        msg = (
             "pysam must be installed to read SAM/CRAM files. "
-            "Use `conda install -c bioconda pysam` or `pip install pysam`.",
+            "Use `conda install -c bioconda pysam` or `pip install pysam`."
         )
-        sys.exit(1)
+        raise ImportError(msg) from None
 
     open_kwargs: dict = {}
     if reference_filename is not None:
@@ -929,7 +1175,7 @@ def _read_pysam_alignment(
     quals: list[str | None] = []
 
     with pysam.AlignmentFile(str(f), mode, **open_kwargs) as af:
-        for read in af:
+        for read in _alignments(af, f, region):
             if read.is_unmapped or read.mapping_quality < mapq:
                 continue
             if required_flag and (read.flag & required_flag) != required_flag:
@@ -980,6 +1226,7 @@ def read_sam(
     filter_flag: int = 1540,
     *,
     sparse: bool = True,
+    region: str | None = None,
 ) -> "PyRanges":
     """Return SAM file as PyRanges.
 
@@ -1003,6 +1250,10 @@ def read_sam(
         Set to False to additionally return QueryStart, QueryEnd, QuerySequence,
         Name, Cigar, Quality (more time consuming).
 
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Needs an index. Records are not clipped to it.
+
     Returns
     -------
     PyRanges
@@ -1024,7 +1275,7 @@ def read_sam(
     >>> pr.read_sam("reads.sam")  # doctest: +SKIP
 
     """
-    return _read_pysam_alignment(f, "r", mapq, required_flag, filter_flag, None, sparse=sparse)
+    return _read_pysam_alignment(f, "r", mapq, required_flag, filter_flag, None, sparse=sparse, region=region)
 
 
 def read_cram(
@@ -1036,6 +1287,7 @@ def read_cram(
     *,
     sparse: bool = True,
     reference_filename: "str | Path | None" = None,
+    region: str | None = None,
 ) -> "PyRanges":
     """Return CRAM file as PyRanges.
 
@@ -1065,6 +1317,10 @@ def read_cram(
         ``@SQ UR:`` header tag does not point to an accessible reference.
         Coordinate-only reads (``sparse=True``) can often be decoded without it.
 
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Needs an index. Records are not clipped to it.
+
     Returns
     -------
     PyRanges
@@ -1086,16 +1342,22 @@ def read_cram(
     >>> pr.read_cram("reads.cram", reference_filename="genome.fa")  # doctest: +SKIP
 
     """
-    return _read_pysam_alignment(f, "rc", mapq, required_flag, filter_flag, reference_filename, sparse=sparse)
+    return _read_pysam_alignment(
+        f, "rc", mapq, required_flag, filter_flag, reference_filename, sparse=sparse, region=region
+    )
 
 
-def read_bigbed(f: "str | Path") -> "PyRanges":
+def read_bigbed(f: "str | Path", *, region: str | None = None) -> "PyRanges":
     """Return BigBed file as PyRanges.
 
     Parameters
     ----------
     f : str or Path
         Path to BigBed (.bb) file.
+
+    region : str, optional
+        Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
+        and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
 
     Returns
     -------
@@ -1121,10 +1383,8 @@ def read_bigbed(f: "str | Path") -> "PyRanges":
     try:
         import pyBigWig  # type: ignore[import]
     except ModuleNotFoundError:
-        LOGGER.exception(
-            "pyBigWig must be installed to read BigBed files. Use `pip install pyBigWig` to install it.",
-        )
-        sys.exit(1)
+        msg = "pyBigWig must be installed to read BigBed files. Use `pip install pyBigWig` to install it."
+        raise ImportError(msg) from None
 
     import re
     from io import StringIO
@@ -1140,9 +1400,15 @@ def read_bigbed(f: "str | Path") -> "PyRanges":
         if (m := re.match(r"\s*[A-Za-z_]\w*(?:\[[^\]]*\])?\s+`?(\w+)`?\s*;", line))
     ]
 
+    if region is None:
+        windows = [(chrom, 0, chrom_len) for chrom, chrom_len in bb.chroms().items()]
+    else:
+        window = _parse_region(region, bb.chroms())
+        windows = [window] if window is not None else []
+
     rows: list[tuple] = []
-    for chrom, chrom_len in bb.chroms().items():
-        entries = bb.entries(chrom, 0, chrom_len)
+    for chrom, lo, hi in windows:
+        entries = bb.entries(chrom, lo, hi)
         if entries:
             rows.extend((chrom, beg, end, rest) for beg, end, rest in entries)
 
@@ -1181,6 +1447,8 @@ def read_pairs(
     /,
     nrows: int | None = None,
     anchor: str = "1",
+    *,
+    storage_options: dict | None = None,
 ) -> "PyRanges":
     r"""Return a 4DN Hi-C ``.pairs`` / ``.pairs.gz`` file as PyRanges.
 
@@ -1204,6 +1472,10 @@ def read_pairs(
         Which mate of the pair becomes the genomic columns
         (``Chromosome / Start / End / Strand``). The other mate is kept in the
         ``Other*`` columns. Downstream PyRanges operations act on the anchor mate.
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Returns
     -------
@@ -1239,6 +1511,9 @@ def read_pairs(
     [199, 899]
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_pairs(local, nrows=nrows, anchor=anchor)
     if anchor not in ("1", "2"):
         msg = f"anchor must be '1' or '2', got {anchor!r}"
         raise ValueError(msg)
@@ -1310,6 +1585,8 @@ def read_paf(  # noqa: C901, PLR0912, PLR0915
     /,
     nrows: int | None = None,
     anchor: str = "target",
+    *,
+    storage_options: dict | None = None,
 ) -> "PyRanges":
     r"""Return a PAF (minimap2 Pairwise mApping Format) file as PyRanges.
 
@@ -1333,6 +1610,10 @@ def read_paf(  # noqa: C901, PLR0912, PLR0915
         The default ``"target"`` puts the reference side there; ``"query"`` puts the
         read/contig side. The other side is kept in the ``Other*`` columns. PAF's single
         ``Strand`` (the query-vs-target orientation) is kept regardless.
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Returns
     -------
@@ -1372,6 +1653,9 @@ def read_paf(  # noqa: C901, PLR0912, PLR0915
     'q1'
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_paf(local, nrows=nrows, anchor=anchor)
     if anchor not in ("target", "query"):
         msg = f"anchor must be 'target' or 'query', got {anchor!r}"
         raise ValueError(msg)
@@ -1494,7 +1778,7 @@ _NARROWPEAK_COLUMNS = [
 ]
 
 
-def read_narrowPeak(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":  # noqa: N802
+def read_narrowPeak(f: "str | Path", /, nrows: int | None = None, *, storage_options: dict | None = None) -> "PyRanges":  # noqa: N802
     r"""Return ENCODE narrowPeak (BED6+4) file as PyRanges.
 
     Parameters
@@ -1504,6 +1788,10 @@ def read_narrowPeak(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":
 
     nrows : int, default None
         Number of rows to read. Default None (all).
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Returns
     -------
@@ -1535,6 +1823,9 @@ def read_narrowPeak(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":
     ([5.5], [50])
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_narrowPeak(local, nrows=nrows)
     df = pd.read_csv(
         Path(f),
         sep="\t",
@@ -1592,12 +1883,10 @@ def read_parquet(
 
     """
     try:
-        df = pd.read_parquet(Path(f), columns=columns, **kwargs)
+        df = pd.read_parquet(f if _is_url(f) else Path(f), columns=columns, **kwargs)
     except ImportError:
-        LOGGER.exception(
-            "A Parquet engine must be installed to read Parquet files. Use `pip install pyarrow` to install one.",
-        )
-        sys.exit(1)
+        msg = "A Parquet engine must be installed to read Parquet files. Use `pip install pyarrow` to install one."
+        raise ImportError(msg) from None
 
     for col in ("Chromosome", "Strand"):
         if col in df.columns and not isinstance(df[col].dtype, pd.CategoricalDtype):
@@ -1661,11 +1950,11 @@ def read_vcf(
     try:
         import pysam  # type: ignore[import]
     except ImportError:
-        LOGGER.exception(
+        msg = (
             "pysam must be installed to read VCF/BCF files. "
-            "Use `conda install -c bioconda pysam` or `pip install pysam`.",
+            "Use `conda install -c bioconda pysam` or `pip install pysam`."
         )
-        sys.exit(1)
+        raise ImportError(msg) from None
 
     vf = pysam.VariantFile(str(Path(f)))
     iterator = vf.fetch(region=region) if region else vf
