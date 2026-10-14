@@ -92,3 +92,14 @@ def test_read_bigwig_seeded_is_deterministic(tmp_path):
         _write_bigwig(path, _seeded_intervals(rng))
         out.append(pr.read_bigwig(path))
     pd.testing.assert_frame_equal(out[0], out[1])  # PyRanges is a pd.DataFrame subclass
+
+
+def test_read_bigwig_reads_an_interval_crossing_a_window_once(tmp_path):
+    """read_bigwig reads 100 kb at a time; an interval crossing into the next window is one row."""
+    path = str(tmp_path / "cross.bw")
+    bw = pyBigWig.open(path, "w")
+    bw.addHeader([("chr1", 300_000)])
+    bw.addEntries(["chr1", "chr1"], [99_990, 150_000], ends=[100_010, 150_010], values=[1.0, 2.0])
+    bw.close()
+    gr = pr.read_bigwig(path)
+    assert list(zip(gr["Start"], gr["End"], strict=True)) == [(99_990, 100_010), (150_000, 150_010)]

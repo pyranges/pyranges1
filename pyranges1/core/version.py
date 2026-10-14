@@ -36,7 +36,7 @@ def version_info() -> None:
 
     update_version_info(version_info, "ncls")
     update_version_info(version_info, "sorted_nearest")
-    update_version_info(version_info, "pyrle")
+    update_version_info(version_info, "runlength")
     update_version_info(version_info, "bamread")
     update_version_info(version_info, "pybigwig")
     update_version_info(version_info, "hypothesis")
