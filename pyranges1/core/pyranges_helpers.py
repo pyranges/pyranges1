@@ -44,9 +44,11 @@ def _codes_and_cardinality(s) -> tuple[ndarray, int]:
     ``pd.factorize(sort=True)`` yields the same group ordering that
     ``groupby(sort=True).ngroup()`` would, but without building the GroupBy
     machinery; for a categorical column (the dtype the readers return for
-    Chromosome/Strand) it works directly off the category codes.
+    Chromosome/Strand) it works directly off the category codes. A missing value is
+    a group of its own, as with ``groupby(dropna=False)``; the default code of -1
+    would collide with another group once the codes of several columns are combined.
     """
-    codes, uniques = pd.factorize(s, sort=True)
+    codes, uniques = pd.factorize(s, sort=True, use_na_sentinel=False)
     return codes.astype(np.int64), len(uniques)
 
 
@@ -119,7 +121,7 @@ def factorize_arange(
     if not by:
         return np.arange(len(df), dtype=np.uint)
     _by = arg_to_list(by)
-    return df.groupby(_by).ngroup().to_numpy().astype(np.uint32)
+    return df.groupby(_by, dropna=False).ngroup().to_numpy().astype(np.uint32)
 
 
 def factorize_binary(
@@ -158,7 +160,7 @@ def factorize_binary(
         # Factorize a column over the union of both frames so the codes are
         # consistent across them (the same Chromosome gets the same id in df and df2).
         joined = pd.concat([df[col], df2[col]], ignore_index=True)
-        codes, uniques = pd.factorize(joined, sort=True)
+        codes, uniques = pd.factorize(joined, sort=True, use_na_sentinel=False)  # missing: a group of its own
         codes = codes.astype(np.int64)
         return codes[:n1], codes[n1:], len(uniques)
 

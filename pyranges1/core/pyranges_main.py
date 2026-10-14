@@ -5917,11 +5917,11 @@ class PyRanges(RangeFrame):
 
         use_strand = validate_and_convert_use_strand(self, use_strand)
         group_by = arg_to_list(group_by)
-        group_ids = factorize_arange(self, group_by)
-
-        negative_strand = (self[STRAND_COL] == "-").to_numpy() if use_strand else np.zeros(len(self), dtype=bool)
-
         gr = self.sort_ranges(by=group_by, use_strand=False) if group_by else self
+
+        # Group ids and strands of the rows in the order they are windowed, i.e. sorted.
+        group_ids = factorize_arange(gr, group_by)
+        negative_strand = (gr[STRAND_COL] == "-").to_numpy() if use_strand else np.zeros(len(gr), dtype=bool)
 
         idx, starts, ends = ruranges.numpy.window(  # type: ignore[attr-defined]
             groups=group_ids,
