@@ -4,7 +4,7 @@ import logging
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Optional, cast
+from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -205,7 +205,7 @@ class PyRanges(RangeFrame):
         missing_any_required_columns = not set(GENOME_LOC_COLS).issubset({*columns})
         if missing_any_required_columns:
             missing = sorted(set(GENOME_LOC_COLS) - set(columns))
-            msg = f"Cannot construct PyRanges: missing required column(s) {missing}."
+            msg = f"Cannot construct PyRanges: missing required column(s) {missing}; the columns are {list(columns)}."
             raise ValueError(msg)
 
         return super().__new__(cls)
@@ -239,11 +239,12 @@ class PyRanges(RangeFrame):
         return cls(df)
 
     @classmethod
-    def from_arrow(cls, data: object) -> "PyRanges | pd.DataFrame":  # type: ignore[override]
+    def from_arrow(cls, data: Any) -> "PyRanges":  # type: ignore[override]
         """Create a PyRanges from an Arrow table, or anything that exports one (polars, DuckDB, ...).
 
-        As pandas.DataFrame.from_arrow, but the result is a PyRanges when it has the
-        Chromosome, Start and End columns, as the constructor's is.
+        As pandas.DataFrame.from_arrow, but the result is a PyRanges. Like the constructor,
+        it raises ValueError when the Chromosome, Start or End column is missing; use
+        pandas.DataFrame.from_arrow for other tables.
 
         Examples
         --------

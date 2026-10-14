@@ -11,11 +11,12 @@ def test_constructor_takes_data_as_a_keyword() -> None:
     assert isinstance(pr.PyRanges(data=LOCI), pr.PyRanges)
     assert isinstance(pr.PyRanges(data=pd.DataFrame(LOCI)), pr.PyRanges)
     assert pr.PyRanges(data=LOCI).equals(pr.PyRanges(LOCI))
-    assert type(pr.PyRanges(data={"a": [1]})) is pd.DataFrame  # not genomic: a DataFrame, as positionally
+    with pytest.raises(ValueError, match="missing required column"):
+        pr.PyRanges(data={"a": [1]})  # not genomic: raises, as positionally
 
 
-def test_not_a_pyranges_names_the_missing_columns() -> None:
-    with pytest.raises(TypeError, match=r"missing column\(s\) \['Chromosome', 'End'\]"):
+def test_not_a_pyranges_names_the_missing_and_present_columns() -> None:
+    with pytest.raises(ValueError, match=r"\['Chromosome', 'End'\]; the columns are \['chrom', 'Start'\]"):
         ensure_pyranges(pd.DataFrame({"chrom": ["chr1"], "Start": [1]}))
 
 
@@ -30,3 +31,5 @@ def test_from_string_reads_browser_positions_and_headerless_bed() -> None:
     assert with_header["Start"].tolist() == [10]
     with pytest.raises(ValueError, match="1-based"):
         pr.from_string("chr1:0-10")
+    wide = pr.from_string("\t".join(["chr1", "10", "20", *"abcdefghijklmnop"]))
+    assert list(wide.columns[-2:]) == [f"Column{wide.shape[1] - 1}", f"Column{wide.shape[1]}"]

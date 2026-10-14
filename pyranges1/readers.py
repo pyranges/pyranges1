@@ -117,7 +117,10 @@ def from_string(s: str) -> "PyRanges":
         from pyranges1.core.out import _BED_EXTRA_ORDER
 
         df = pd.read_csv(StringIO(s), sep=r"\s+", header=None)
-        df.columns = pd.Index(["Chromosome", "Start", "End", *_BED_EXTRA_ORDER][: df.shape[1]])
+        names = ["Chromosome", "Start", "End", *_BED_EXTRA_ORDER]
+        # Columns past BED12 (BED12+N) are named by their position.
+        names += [f"Column{i + 1}" for i in range(len(names), df.shape[1])]
+        df.columns = pd.Index(names[: df.shape[1]])
         return ensure_pyranges(df)
 
     df = pd.read_csv(StringIO(s), sep=r"\s+", index_col=None)

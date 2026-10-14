@@ -10,7 +10,6 @@ from pyranges1.core.names import (
     CHROM_AND_STRAND_COLS,
     CHROM_COL,
     FORWARD_STRAND,
-    GENOME_LOC_COLS,
     OVERLAP_ALL,
     OVERLAP_FIRST,
     REMOVED_OVERLAP_CONTAINED,
@@ -503,8 +502,7 @@ def ensure_pyranges(df: "pd.DataFrame") -> "PyRanges":
     from pyranges1 import PyRanges
 
     if not isinstance(ret := PyRanges(df, copy=False), PyRanges):
-        missing = [c for c in GENOME_LOC_COLS if c not in df.columns]
-        msg = f"Not a PyRanges: missing column(s) {missing}; the columns are {list(df.columns)}."
+        msg = "Not a PyRanges"
         raise TypeError(msg)
     return ret
 
