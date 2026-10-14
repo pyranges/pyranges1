@@ -23,6 +23,7 @@ from pyranges1.readers import (  # noqa: F401
     read_bigbed,
     read_bigwig,
     read_cram,
+    read_gff,
     read_gff3,
     read_gtf,
     read_narrowPeak,
@@ -33,5 +34,3 @@ from pyranges1.readers import (  # noqa: F401
     read_vcf,
     read_wig,
 )
-
-read_gff = read_gtf

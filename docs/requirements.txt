@@ -37,7 +37,7 @@ pyfaidx==0.8.1.1
 Pygments==2.17.2
 pyproject-api==1.6.1
 pyright==1.1.361
-pyrle
+runlength
 pysam==0.22.1
 pytest==8.2.0
 pytest-watcher==0.4.2
