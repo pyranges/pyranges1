@@ -7,14 +7,16 @@ from pyranges1.core.names import END_COL, START_COL, STRAND_COL
 from pyranges1.core.pyranges_helpers import ensure_pyranges
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from pyranges1 import PyRanges
 
 _BLOCK_COLUMNS = ["BlockCount", "BlockSizes", "BlockStarts"]
 
 
-def _block_list(values: "object") -> list[list[int]]:
+def _block_list(values: "Iterable[object]") -> list[list[int]]:
     """Parse BED12 block lists ("10,20," with or without the trailing comma)."""
-    return [[int(v) for v in str(text).rstrip(",").split(",") if v] for text in values]  # type: ignore[attr-defined]
+    return [[int(v) for v in str(text).rstrip(",").split(",") if v] for text in values]
 
 
 def _explode_blocks(

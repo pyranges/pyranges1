@@ -1,5 +1,6 @@
 import gzip
 
+import pandas as pd
 import pytest
 
 import pyranges1 as pr
@@ -22,6 +23,18 @@ def test_read_bedgraph_skips_track_lines_and_refuses_other_files(tmp_path) -> No
     path.write_text("chr1\t0\t10\tname\t1\n")
     with pytest.raises(ValueError, match="4 tab-separated"):
         pr.read_bedgraph(path)
+
+
+def test_read_bedgraph_paths_agree(tmp_path) -> None:
+    text = 'track type=bedGraph name="x"\n' + "".join(f"chr{i % 3 + 1}\t{i * 10}\t{i * 10 + 5}\t{i / 2}\n" for i in range(50))
+    plain = tmp_path / "s.bedGraph"
+    plain.write_text(text)
+    bgz = tmp_path / "s.bedGraph.bgz"  # gzip under another suffix: the pandas path
+    bgz.write_bytes(gzip.compress(text.encode()))
+    whole = pr.read_bedgraph(plain)
+    assert len(whole) == 50
+    pd.testing.assert_frame_equal(pr.read_bedgraph(bgz), whole)
+    pd.testing.assert_frame_equal(pr.read_bedgraph(plain, nrows=7), whole.head(7))
 
 
 def test_read_wig_sections(tmp_path) -> None:

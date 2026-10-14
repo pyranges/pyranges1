@@ -24,19 +24,32 @@ def _open_text(path: Path) -> TextIO:
 
 
 def _read_bedgraph(f: "str | Path", nrows: int | None) -> "PyRanges":
+    # The same route as read_bed: leading track/browser/# lines are found once and
+    # skipped, then the file is parsed by pyarrow, or by pandas when nrows is given.
+    from pyranges1.readers import _as_sorted_categorical, _bed_preamble, _read_bed_pyarrow
+
     path = Path(f)
-    with _open_text(path) as fh:
-        lines = [line for line in fh if line.strip() and not line.startswith(_HEADER_LINES)]
-    if lines and len(lines[0].split("\t")) != 4:  # noqa: PLR2004
-        msg = f"A bedGraph file has 4 tab-separated fields; {path} has {len(lines[0].split(chr(9)))}."
+    skip, first_fields, compressed = _bed_preamble(path)
+    if first_fields and len(first_fields) != 4:  # noqa: PLR2004
+        msg = f"A bedGraph file has 4 tab-separated fields; {path} has {len(first_fields)}."
         raise ValueError(msg)
-    df = pd.read_csv(
-        StringIO("".join(lines[:nrows] if nrows is not None else lines)),
-        sep="\t",
-        header=None,
-        names=[CHROM_COL, START_COL, END_COL, VALUE_COL],
-        dtype={CHROM_COL: "category", VALUE_COL: "float64"},
-    )
+    names = [CHROM_COL, START_COL, END_COL, VALUE_COL]
+    # pyarrow recognises gzip by a .gz suffix only, so other compressed files go to pandas.
+    fast = nrows is None and not (compressed and not path.name.endswith(".gz"))
+    df = _read_bed_pyarrow(path, names=names, header=None, skip_rows=skip) if fast else None
+    if df is None:
+        df = pd.read_csv(
+            path,
+            sep="\t",
+            header=None,
+            names=names,
+            nrows=nrows,
+            skiprows=skip,
+            compression="gzip" if compressed else "infer",
+            dtype={CHROM_COL: "category"},
+        )
+    df[VALUE_COL] = df[VALUE_COL].astype("float64")
+    _as_sorted_categorical(df, (CHROM_COL,))
     return ensure_pyranges(df)
 
 
