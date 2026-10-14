@@ -681,7 +681,14 @@ def to_keys_and_values(line: str) -> dict[str, str]:
     return dict(it.split("=", 1) for it in line.rstrip("; ").split(";") if "=" in it)
 
 
-def read_gff(f: str | Path, /, *, nrows: int | None = None) -> "PyRanges":
+def read_gff(
+    f: str | Path,
+    /,
+    *,
+    nrows: int | None = None,
+    duplicate_attr: bool = False,
+    ignore_bad: bool = False,
+) -> "PyRanges":
     """Read a GFF file, as GFF3 or as GTF/GFF2 depending on its content.
 
     A ``##gff-version 3`` line, or ``key=value`` attributes on the first record,
@@ -695,6 +702,12 @@ def read_gff(f: str | Path, /, *, nrows: int | None = None) -> "PyRanges":
 
     nrows : int, default None
         Number of rows to read. Default None, i.e. all.
+
+    duplicate_attr : bool, default False
+        Passed to `read_gtf` when the file is read as GTF; ignored for GFF3.
+
+    ignore_bad : bool, default False
+        Passed to `read_gtf` when the file is read as GTF; ignored for GFF3.
 
     Returns
     -------
@@ -721,7 +734,9 @@ def read_gff(f: str | Path, /, *, nrows: int | None = None) -> "PyRanges":
                 attributes = line.rstrip("\n").split("\t")[8:9]
                 gff3 = bool(attributes) and "=" in attributes[0] and '"' not in attributes[0]
                 break
-    return read_gff3(path, nrows=nrows) if gff3 else read_gtf(path, nrows=nrows)
+    if gff3:
+        return read_gff3(path, nrows=nrows)
+    return read_gtf(path, nrows=nrows, duplicate_attr=duplicate_attr, ignore_bad=ignore_bad)
 
 
 def read_gff3(

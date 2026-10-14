@@ -34,3 +34,9 @@ def test_read_gff_reads_gff3_attributes(tmp_path: Path) -> None:
     gtf = tmp_path / "a.gff2"
     gtf.write_text('chr1\tsrc\tgene\t11\t20\t.\t+\t.\tgene_id "g1"; gene_name "A";\n')
     assert pr.read_gff(gtf)["gene_id"].tolist() == ["g1"]
+
+
+def test_read_gff_passes_gtf_options_on(tmp_path: Path) -> None:
+    gtf = tmp_path / "a.gff2"
+    gtf.write_text('chr1\tsrc\tgene\t11\t20\t.\t+\t.\tgene_id "g1"; tag "a"; tag "b";\n')
+    assert pr.read_gff(gtf, duplicate_attr=True, ignore_bad=True)["tag"].tolist() == ["a,b"]
