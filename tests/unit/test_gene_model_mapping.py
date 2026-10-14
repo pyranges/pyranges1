@@ -75,3 +75,12 @@ def test_map_to_global_on_same_id_column(keep_id: bool, keep_loc: bool) -> None:
     got = local.map_to_global(exons, "transcript_id", local_on="transcript_id", keep_id=keep_id, keep_loc=keep_loc)
     assert got[["Chromosome", "Start", "End"]].values.tolist() == [["chr1", 190, 200], ["chr1", 300, 320]]
     assert got["transcript_id"].tolist() == ["tx1", "tx1"]
+
+
+@pytest.mark.parametrize("split", [True, False])
+def test_map_to_local_leaves_a_user_row_column_alone(split) -> None:
+    exons = pr.PyRanges({"Chromosome": "chr1", "Start": [1000, 1100], "End": [1050, 1200], "Strand": "+", "transcript_id": "tx"})
+    gr = pr.PyRanges({"Chromosome": ["chr1"], "Start": [1040], "End": [1110], "Strand": ["+"], "__row": ["mine"]})
+    local = gr.map_to_local(exons, "transcript_id", split_at_junctions=split)
+    assert set(local["__row"]) == {"mine"}
+    assert "__row_" not in local.columns

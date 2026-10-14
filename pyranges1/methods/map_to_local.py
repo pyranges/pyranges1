@@ -65,7 +65,8 @@ def _map_to_local(
         .rename(columns={ref_on: fixed_idcol})
     )
 
-    gr = gr.assign(**{row_id: np.arange(len(gr))})
+    row_col = _unused_name(row_id, gr.columns)
+    gr = gr.assign(**{row_col: np.arange(len(gr))})
     gr = gr.join_overlaps(ref, strand_behavior="ignore", match_by=match_by, suffix=suffix)
 
     # removing gr regions that do not overlap with ref
@@ -133,15 +134,22 @@ def _map_to_local(
             gr = gr.rename(columns={strand_b: out_global_strand})
             output_cols = [*output_cols, out_global_strand]
 
-    gr = gr if split_at_junctions else _join_exon_pieces(gr)
+    gr = gr if split_at_junctions else _join_exon_pieces(gr, row_col)
 
     # reordering columns to match original gr
     return ensure_pyranges(gr.reindex(columns=output_cols))
 
 
-def _join_exon_pieces(gr: "PyRanges") -> "PyRanges":
+def _unused_name(name: str, columns: "pd.Index") -> str:
+    """Return `name`, with underscores appended until no column has it."""
+    while name in columns:
+        name += "_"
+    return name
+
+
+def _join_exon_pieces(gr: "PyRanges", row_col: str) -> "PyRanges":
     """One row per (interval, transcript): its exon pieces are adjacent in transcript coordinates."""
-    keys = [row_id, CHROM_COL] + ([STRAND_COL] if STRAND_COL in gr.columns else [])
+    keys = [row_col, CHROM_COL] + ([STRAND_COL] if STRAND_COL in gr.columns else [])
     grouped = gr.groupby(keys, sort=False, dropna=False)
     lefts = [c for c in (START_COL, out_global_start) if c in gr.columns]
     rights = [c for c in (END_COL, out_global_end) if c in gr.columns]
