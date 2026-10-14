@@ -10,6 +10,7 @@ from natsort import natsorted  # type: ignore[import]
 
 from pyranges1.core.options import option_manager
 from pyranges1.core.pyranges_helpers import ensure_pyranges
+from pyranges1.core.remote import _is_url, _local_copy
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -64,7 +65,7 @@ def from_string(s: str) -> "PyRanges":
     return ensure_pyranges(df)
 
 
-def _read_bed_region(path: Path, region: str, columns: list[str]) -> "PyRanges":
+def _read_bed_region(path: "str | Path", region: str, columns: list[str]) -> "PyRanges":
     """Read the records of a tabix-indexed BED file that overlap `region`."""
     try:
         import pysam  # type: ignore[import]
@@ -98,7 +99,9 @@ def _read_bed_region(path: Path, region: str, columns: list[str]) -> "PyRanges":
     return ensure_pyranges(df)
 
 
-def read_bed(f: Path, /, nrows: int | None = None, *, region: str | None = None) -> "PyRanges":
+def read_bed(
+    f: Path, /, nrows: int | None = None, *, region: str | None = None, storage_options: dict | None = None
+) -> "PyRanges":
     """Return bed file as PyRanges.
 
     This is a reader for files that follow the bed format. They can have from
@@ -119,6 +122,12 @@ def read_bed(f: Path, /, nrows: int | None = None, *, region: str | None = None)
         Only the records overlapping this region, e.g. ``"chr1:1,000-2,000"`` (1-based
         and inclusive, as samtools reads it) or ``"chr1"``. Records are not clipped to it.
         Needs a bgzip-compressed file with a tabix (.tbi or .csi) index, and pysam.
+        With a URL, only the region is fetched; as with samtools, htslib saves a copy
+        of the remote index in the working directory.
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Notes
     -----
@@ -166,8 +175,13 @@ def read_bed(f: Path, /, nrows: int | None = None, *, region: str | None = None)
         "BlockSizes",
         "BlockStarts",
     ]
+    # Before the URL branch: pysam reads a remote tabix file through its index
+    # instead of copying it.
     if region is not None:
-        return _read_bed_region(Path(f), region, columns)
+        return _read_bed_region(str(f) if _is_url(f) else Path(f), region, columns)
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_bed(local, nrows=nrows)
 
     path = Path(f)
     skip, first_fields, compressed = _bed_preamble(path)
@@ -548,6 +562,7 @@ def read_gtf(
     nrows: int | None = None,
     duplicate_attr: bool = False,
     ignore_bad: bool = False,
+    storage_options: dict | None = None,
 ) -> "PyRanges":
     r"""Read files in the Gene Transfer Format.
 
@@ -565,6 +580,10 @@ def read_gtf(
     ignore_bad : bool, default False
         Whether to ignore bad lines or raise an error.
 
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Returns
     -------
@@ -599,6 +618,9 @@ def read_gtf(
     Contains 1 chromosomes and 1 strands.
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_gtf(local, nrows=nrows, duplicate_attr=duplicate_attr, ignore_bad=ignore_bad)
     return read_gtf_full(
         Path(f),
         nrows=nrows,
@@ -788,6 +810,8 @@ def read_gff(
 def read_gff3(
     f: str | Path,
     nrows: int | None = None,
+    *,
+    storage_options: dict | None = None,
 ) -> "PyRanges":
     """Read files in the General Feature Format into a PyRanges.
 
@@ -798,6 +822,10 @@ def read_gff3(
 
     nrows : int, default None
         Number of rows to read. Default None, i.e. all.
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Returns
     -------
@@ -820,6 +848,9 @@ def read_gff3(
     pyranges1.read_gtf : read files in the Gene Transfer Format
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_gff3(local, nrows=nrows)
     path = Path(f)
 
     dtypes: Mapping = {"Chromosome": "category", "Feature": "category", "Strand": "category"}
@@ -1416,6 +1447,8 @@ def read_pairs(
     /,
     nrows: int | None = None,
     anchor: str = "1",
+    *,
+    storage_options: dict | None = None,
 ) -> "PyRanges":
     r"""Return a 4DN Hi-C ``.pairs`` / ``.pairs.gz`` file as PyRanges.
 
@@ -1439,6 +1472,10 @@ def read_pairs(
         Which mate of the pair becomes the genomic columns
         (``Chromosome / Start / End / Strand``). The other mate is kept in the
         ``Other*`` columns. Downstream PyRanges operations act on the anchor mate.
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Returns
     -------
@@ -1474,6 +1511,9 @@ def read_pairs(
     [199, 899]
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_pairs(local, nrows=nrows, anchor=anchor)
     if anchor not in ("1", "2"):
         msg = f"anchor must be '1' or '2', got {anchor!r}"
         raise ValueError(msg)
@@ -1545,6 +1585,8 @@ def read_paf(  # noqa: C901, PLR0912, PLR0915
     /,
     nrows: int | None = None,
     anchor: str = "target",
+    *,
+    storage_options: dict | None = None,
 ) -> "PyRanges":
     r"""Return a PAF (minimap2 Pairwise mApping Format) file as PyRanges.
 
@@ -1568,6 +1610,10 @@ def read_paf(  # noqa: C901, PLR0912, PLR0915
         The default ``"target"`` puts the reference side there; ``"query"`` puts the
         read/contig side. The other side is kept in the ``Other*`` columns. PAF's single
         ``Strand`` (the query-vs-target orientation) is kept regardless.
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Returns
     -------
@@ -1607,6 +1653,9 @@ def read_paf(  # noqa: C901, PLR0912, PLR0915
     'q1'
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_paf(local, nrows=nrows, anchor=anchor)
     if anchor not in ("target", "query"):
         msg = f"anchor must be 'target' or 'query', got {anchor!r}"
         raise ValueError(msg)
@@ -1729,7 +1778,7 @@ _NARROWPEAK_COLUMNS = [
 ]
 
 
-def read_narrowPeak(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":  # noqa: N802
+def read_narrowPeak(f: "str | Path", /, nrows: int | None = None, *, storage_options: dict | None = None) -> "PyRanges":  # noqa: N802
     r"""Return ENCODE narrowPeak (BED6+4) file as PyRanges.
 
     Parameters
@@ -1739,6 +1788,10 @@ def read_narrowPeak(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":
 
     nrows : int, default None
         Number of rows to read. Default None (all).
+
+    storage_options : dict, optional
+        Options for the filesystem when `f` is a URL, as fsspec takes them (credentials,
+        endpoint, ...). http(s) and ftp URLs need none; for other schemes see `fsspec`.
 
     Returns
     -------
@@ -1770,6 +1823,9 @@ def read_narrowPeak(f: "str | Path", /, nrows: int | None = None) -> "PyRanges":
     ([5.5], [50])
 
     """
+    if _is_url(f):
+        with _local_copy(str(f), storage_options) as local:
+            return read_narrowPeak(local, nrows=nrows)
     df = pd.read_csv(
         Path(f),
         sep="\t",
@@ -1827,7 +1883,7 @@ def read_parquet(
 
     """
     try:
-        df = pd.read_parquet(Path(f), columns=columns, **kwargs)
+        df = pd.read_parquet(f if _is_url(f) else Path(f), columns=columns, **kwargs)
     except ImportError:
         msg = "A Parquet engine must be installed to read Parquet files. Use `pip install pyarrow` to install one."
         raise ImportError(msg) from None
