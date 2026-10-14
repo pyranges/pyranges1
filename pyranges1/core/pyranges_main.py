@@ -2,7 +2,7 @@
 
 import logging
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, cast
 
@@ -29,6 +29,7 @@ from pyranges1.core.names import (
     START_COL,
     STRAND_BEHAVIOR_OPPOSITE,
     STRAND_COL,
+    TEMP_INDEX_COL,
     TEMP_TRANSCRIPT_ID_COL,
     USE_STRAND_DEFAULT,
     VALID_BY_TYPES,
@@ -68,7 +69,7 @@ from pyranges1.range_frame.range_frame_validator import InvalidRangesReason
 
 if TYPE_CHECKING:
     import pyfaidx  # type: ignore[import]
-    from pyrle.rledict import Rledict  # type: ignore[import]
+    from runlength import RleBatch  # type: ignore[import-not-found]
 
 
 __all__ = ["PyRanges"]
@@ -168,23 +169,44 @@ class PyRanges(RangeFrame):
 
     """
 
-    def __new__(cls, *args, **kwargs) -> "pr.PyRanges | pd.DataFrame":  # type: ignore[misc]
+    # a frame that loses one of these is no longer a PyRanges: RangeFrame._constructor_from_mgr
+    # rebuilds it as a plain DataFrame.
+    _required_columns: frozenset[str] = frozenset(GENOME_LOC_COLS)
+
+    # built on first use by the loci property: pandas builds frames from a manager without
+    # ever calling __init__, so this cannot be set there alone.
+    _loci: "LociGetter | None" = None
+
+    def __new__(cls, *args, **kwargs) -> "pr.PyRanges":  # type: ignore[misc]
         """Create a new instance of a PyRanges object."""
         # __new__ is a special static method used for creating and
         # returning a new instance of a class. It is called before
         # __init__ and is typically used in scenarios requiring
         # control over the creation of new instances
 
-        # Logic to decide whether to return an instance of PyRanges or a DataFrame
+        # Direct construction always yields a real PyRanges, or raises. The
+        # graceful fallback to a plain DataFrame (e.g. when a pandas operation
+        # like .drop() removes a required column) lives in _constructor instead,
+        # so it only kicks in for pandas' internal frame reconstruction and never
+        # for a user calling PyRanges(...) directly. See geopandas.GeoDataFrame
+        # for the same split between __init__ and _constructor.
         if not args and "data" not in kwargs:
-            df = pd.DataFrame({k: [] for k in GENOME_LOC_COLS})
-            df.__class__ = pr.PyRanges
-            return df
+            return super().__new__(cls)
 
-        df = pd.DataFrame(kwargs.get("../data") or args[0])
-        missing_any_required_columns = not set(GENOME_LOC_COLS).issubset({*df.columns})
+        # pandas hands us a whole DataFrame every time it rebuilds a frame internally, so read
+        # the columns off it rather than building a second frame just to look at them; a call
+        # that names the columns on the way in still has to be built before they can be read.
+        data = kwargs["data"] if "data" in kwargs else args[0]
+        if isinstance(data, pd.DataFrame) and "columns" not in kwargs:
+            columns = data.columns
+        else:
+            columns = pd.DataFrame(*args, **kwargs).columns
+
+        missing_any_required_columns = not set(GENOME_LOC_COLS).issubset({*columns})
         if missing_any_required_columns:
-            return df
+            missing = sorted(set(GENOME_LOC_COLS) - set(columns))
+            msg = f"Cannot construct PyRanges: missing required column(s) {missing}."
+            raise ValueError(msg)
 
         return super().__new__(cls)
 
@@ -199,11 +221,22 @@ class PyRanges(RangeFrame):
 
         super().__init__(*args, **kwargs)
 
-        self._loci = LociGetter(self)
-
     @property
-    def _constructor(self) -> type:
-        return pr.PyRanges
+    def _constructor(self) -> Callable[..., "pr.PyRanges | pd.DataFrame"]:
+        return self._constructor_with_fallback
+
+    @classmethod
+    def _constructor_with_fallback(cls, *args, **kwargs) -> "pr.PyRanges | pd.DataFrame":
+        """Build a PyRanges, falling back to a DataFrame if a required column is missing.
+
+        Used by pandas internally to reconstruct frames from operations (e.g. .drop(),
+        groupby aggregations). See the "Operations that remove a column required for a
+        PyRanges return a DataFrame instead" example above.
+        """
+        df = pd.DataFrame(*args, **kwargs)
+        if not set(GENOME_LOC_COLS).issubset({*df.columns}):
+            return df
+        return cls(df)
 
     def groupby(self, *args, **kwargs) -> "PyRangesDataFrameGroupBy":
         """Groupby PyRanges."""
@@ -409,6 +442,8 @@ class PyRanges(RangeFrame):
         TypeError: The loci accessor does not accept a list. If you meant to retrieve columns, use get_with_loc_columns instead.
 
         """
+        if self._loci is None:
+            self._loci = LociGetter(self)
         return self._loci
 
     def _chrom_and_strand_info(self) -> str:
@@ -756,7 +791,8 @@ class PyRanges(RangeFrame):
 
     def copy(self, *args, **kwargs) -> "pr.PyRanges":
         """Return a copy of the PyRanges."""
-        return ensure_pyranges(super().copy(*args, **kwargs))
+        # a copy keeps every column, so pandas hands this straight back as our own class
+        return self._rebuild_as_self(super().copy(*args, **kwargs))
 
     def _count_overlaps(
         self,
@@ -2336,8 +2372,8 @@ class PyRanges(RangeFrame):
           int64  |    category        int64    int64  category    str                 int64    int64  str              int64
         -------  ---  ------------  -------  -------  ----------  --------------  ---------  -------  ----------  ----------
               0  |    chr1                3        6  +           chr1                   20       22  +                   15
-              2  |    chr1                8        9  +           chr1                   20       22  +                   12
               1  |    chr1                5        7  -           chr1                    6        7  -                    0
+              2  |    chr1                8        9  +           chr1                   20       22  +                   12
         PyRanges with 3 rows, 9 columns, and 1 index columns.
         Contains 1 chromosomes and 2 strands.
 
@@ -2397,7 +2433,18 @@ class PyRanges(RangeFrame):
         # Unpacked rather than zipped against VALID_GENOMIC_STRAND_INFO: pairing the
         # halves with their strand by position would silently mismap if either the
         # constant or split_on_strand's return order changed.
-        forward_self, reverse_self = split_on_strand(self)
+        # Each strand is searched and ordered on its own, so the plain concat below
+        # groups the result by strand (every forward row, then every reverse row) and
+        # drops the interleaving between strands; preserve_input_order would otherwise
+        # have no effect in this branch (issue #169). Carry each row's position in self
+        # through the split so the halves can be merged back into input order, matching
+        # the direction="any" branch. The index cannot stand in for the position, since
+        # k > 1 duplicates it and the caller's index may be non-unique.
+        ordered_self = self
+        if preserve_input_order:
+            ordered_self = self.copy()
+            ordered_self[TEMP_INDEX_COL] = np.arange(len(self))
+        forward_self, reverse_self = split_on_strand(ordered_self)
         per_strand = [
             RangeFrame(strand_self).nearest_ranges(
                 other=_other,
@@ -2416,7 +2463,11 @@ class PyRanges(RangeFrame):
             )
         ]
 
-        return ensure_pyranges(pd.concat(per_strand))
+        combined = pd.concat(per_strand)
+        if preserve_input_order:
+            combined = combined.sort_values(TEMP_INDEX_COL, kind="stable")
+            del combined[TEMP_INDEX_COL]
+        return ensure_pyranges(combined)
 
     def overlap(  # type: ignore[override]
         self,
@@ -4216,6 +4267,7 @@ class PyRanges(RangeFrame):
         *,
         divide: bool = False,
         rpm: bool = True,
+        precomputed: bool = False,
         return_data=False,
     ) -> "PyRanges | None":
         """Compute coverage (interval-based, or using a numerical value column) and write to bigwig.
@@ -4224,6 +4276,9 @@ class PyRanges(RangeFrame):
         If value_col is provided, the score is the sum of values of all intervals spanning that position.
         The score per position is then reduced to a minimal number of ranges with constant coverage
         (i.e. like a run-length encoding), and written in bigwig format to the provided path.
+
+        With ``precomputed=True``, skip coverage computation and write each input range with its value
+        from ``value_col``; with this option, input ranges must be non-overlapping.
 
         Note
         ----
@@ -4243,13 +4298,21 @@ class PyRanges(RangeFrame):
         value_col : str, default None
             Name of column to compute coverage of.
             If None, compute coverage (i.e. number of intervals spanning each position).
-
-        rpm : True
-            Whether to normalize data by dividing by total number of intervals and multiplying by
-            1e6.
+            Required when ``precomputed=True``; in that mode, its values are written directly.
 
         divide : bool, default False
-            (Only useful with value_col) Divide value coverage by regular coverage and take log2.
+            (Only useful with value_col) Divide value coverage by regular coverage and take log2. Incompatible
+            with ``precomputed=True``.
+
+        rpm : bool, default True
+            Whether to normalize data by dividing by total number of intervals and multiplying by 1e6. Ignored
+            when ``precomputed=True``.
+
+        precomputed : bool, default False
+            Write the ranges and ``value_col`` values directly, without
+            computing coverage. ``rpm`` is ignored in this mode. The ranges must be non-overlapping
+            (ignoring strand). To check, use:
+            ``assert len(gr.max_disjoint_overlaps(use_strand=False)) == len(gr)``
 
         return_data : bool, default False
             Whether to return the data that would be written to bigwig as a PyRanges.
@@ -4257,7 +4320,7 @@ class PyRanges(RangeFrame):
         Note
         ----
 
-        Requires pybigwig and pyrle to be installed.
+        Requires pybigwig and runlength to be installed.
 
 
         Examples
@@ -4313,6 +4376,12 @@ class PyRanges(RangeFrame):
         PyRanges with 6 rows, 4 columns, and 1 index columns.
         Contains 1 chromosomes.
 
+        Write already-computed, non-overlapping values directly:
+
+        >>> signal = pr.PyRanges({"Chromosome": ["chr1", "chr1"],
+        ...                       "Start": [1, 6], "End": [4, 9], "Value": [0.5, 1.5]})
+        >>> signal.to_bigwig("signal.bw", {"chr1": 10}, value_col="Value", precomputed=True)  # doctest: +SKIP
+
         """
         from pyranges1.core.out import _to_bigwig
 
@@ -4329,6 +4398,7 @@ class PyRanges(RangeFrame):
             rpm=rpm,
             divide=divide,
             value_col=value_col,
+            precomputed=precomputed,
             return_data=return_data,
         )
 
@@ -4572,109 +4642,68 @@ class PyRanges(RangeFrame):
         strand: VALID_USE_STRAND_TYPE = "auto",
         *,
         rpm: bool = False,
-    ) -> "Rledict":
-        """Return as Rledict.
+    ) -> "RleBatch":
+        """Return the coverage, or the sum of a numerical column, as run-length encoded sequences.
 
-        Create collection of Rles representing the coverage or other numerical value.
+        Requires runlength to be installed.
 
         Parameters
         ----------
         value_col : str, default None
-            Numerical column to create Rledict from.
+            Numerical column to sum over the intervals covering each position.
+            By default, count the intervals.
 
         strand : bool, default None, i.e. auto
-            Whether to treat strands serparately.
+            Whether to treat strands separately.
 
         rpm : bool, default False
             Normalize by multiplying with `1e6/(number_intervals)`.
 
         Returns
         -------
-        pyrle.Rledict
+        runlength.RleBatch
 
-            Rle with coverage or other info from the PyRanges.
+            One sequence per chromosome, or per chromosome and strand, starting
+            at position 0. Positions no interval covers are 0.
 
-        """
-        broken_examples = (  # noqa:F841
-            """
+        See Also
+        --------
+        PyRanges.to_bigwig : write the coverage to a bigwig file
 
         Examples
         --------
-        # >>> d = {'Chromosome': ['chr1', 'chr1', 'chr1'], 'Start': [3, 8, 5],
-        # ...      'End': [6, 9, 7], 'Score': [0.1, 5, 3.14], 'Strand': ['+', '+', '-']}
-        # >>> gr = pr.PyRanges(d)
-        # >>> gr.to_rle()
-        # chr1 +
-        # --
-        # +--------+-----+-----+-----+-----+
-        # | Runs   | 3   | 3   | 2   | 1   |
-        # |--------+-----+-----+-----+-----|
-        # | Values | 0.0 | 1.0 | 0.0 | 1.0 |
-        # +--------+-----+-----+-----+-----+
-        # Rle of length 9 containing 4 elements (avg. length 2.25)
-        # <BLANKLINE>
-        # chr1 -
-        # --
-        # +--------+-----+-----+
-        # | Runs   | 5   | 2   |
-        # |--------+-----+-----|
-        # | Values | 0.0 | 1.0 |
-        # +--------+-----+-----+
-        # Rle of length 7 containing 2 elements (avg. length 3.5)
-        # RleDict object with 2 chromosomes/strand pairs.
+        >>> d = {'Chromosome': ['chr1', 'chr1', 'chr1'], 'Start': [3, 8, 5],
+        ...      'End': [6, 9, 7], 'Score': [0.1, 5, 3.14], 'Strand': ['+', '+', '-']}
+        >>> gr = pr.PyRanges(d)
+        >>> gr.to_rle()
+        RleBatch(keys=2, runs=6, dtype=Int64)
+          ('chr1', '+'): length=9, values=[0, 1, 0, 1]
+          ('chr1', '-'): length=7, values=[0, 1]
 
-        # >>> gr.to_rle(value_col="Score")
-        # chr1 +
-        # --
-        # +--------+-----+-----+-----+-----+
-        # | Runs   | 3   | 3   | 2   | 1   |
-        # |--------+-----+-----+-----+-----|
-        # | Values | 0.0 | 0.1 | 0.0 | 5.0 |
-        # +--------+-----+-----+-----+-----+
-        # Rle of length 9 containing 4 elements (avg. length 2.25)
-        # <BLANKLINE>
-        # chr1 -
-        # --
-        # +--------+-----+------+
-        # | Runs   | 5   | 2    |
-        # |--------+-----+------|
-        # | Values | 0.0 | 3.14 |
-        # +--------+-----+------+
-        # Rle of length 7 containing 2 elements (avg. length 3.5)
-        # RleDict object with 2 chromosomes/strand pairs.
+        >>> gr.to_rle().to_pandas()
+          Chromosome Strand  start  end  value
+        0       chr1      +      0    3      0
+        1       chr1      +      3    6      1
+        2       chr1      +      6    8      0
+        3       chr1      +      8    9      1
+        4       chr1      -      0    5      0
+        5       chr1      -      5    7      1
 
-        # >>> gr.to_rle(value_col="Score", strand=False)
-        # chr1
-        # +--------+-----+-----+------+------+-----+-----+
-        # | Runs   | 3   | 2   | 1    | 1    | 1   | 1   |
-        # |--------+-----+-----+------+------+-----+-----|
-        # | Values | 0.0 | 0.1 | 3.24 | 3.14 | 0.0 | 5.0 |
-        # +--------+-----+-----+------+------+-----+-----+
-        # Rle of length 9 containing 6 elements (avg. length 1.5)
-        # Unstranded Rledict object with 1 chromosome.
+        >>> gr.to_rle("Score", strand=False).to_pandas()
+          Chromosome  start  end  value
+        0       chr1      0    3   0.00
+        1       chr1      3    5   0.10
+        2       chr1      5    6   3.24
+        3       chr1      6    7   3.14
+        4       chr1      7    8   0.00
+        5       chr1      8    9   5.00
 
-        # >>> gr.to_rle(rpm=True)
-        # chr1 +
-        # --
-        # +--------+-----+-------------------+-----+-------------------+
-        # | Runs   | 3   | 3                 | 2   | 1                 |
-        # |--------+-----+-------------------+-----+-------------------|
-        # | Values | 0.0 | 333333.3333333333 | 0.0 | 333333.3333333333 |
-        # +--------+-----+-------------------+-----+-------------------+
-        # Rle of length 9 containing 4 elements (avg. length 2.25)
-        # <BLANKLINE>
-        # chr1 -
-        # --
-        # +--------+-----+-------------------+
-        # | Runs   | 5   | 2                 |
-        # |--------+-----+-------------------|
-        # | Values | 0.0 | 333333.3333333333 |
-        # +--------+-----+-------------------+
-        # Rle of length 7 containing 2 elements (avg. length 3.5)
-        # Rledict object with 2 chromosomes/strand pairs.
+        >>> gr.to_rle(rpm=True).get(("chr1", "-"))
+        Rle(length=7, runs=2, dtype=Float64)
+          runs:   [5, 2]
+          values: [0.0, 333333.3333333333]
+
         """
-        )
-
         if strand is None:
             strand = self.strand_valid
 
@@ -5004,7 +5033,8 @@ class PyRanges(RangeFrame):
         """
         if not self.has_strand:
             return self
-        return self.drop_and_return(STRAND_COL, axis=1)
+        # Strand isn't a required column, so this drop can never fall back to a DataFrame.
+        return cast("PyRanges", self.drop_and_return(STRAND_COL, axis=1))
 
     def flip_strand(self: "PyRanges") -> "PyRanges":
         """Flip the strand of every interval (+ → - and - → +).

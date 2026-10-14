@@ -117,3 +117,87 @@ def test_to_bigwig_names_chromosomes_missing_from_the_sizes(tmp_path) -> None:
     gr = pr.PyRanges({"Chromosome": ["chr1", "contig7"], "Start": [10, 0], "End": [50, 30]})
     with pytest.raises(ValueError, match="contig7"):
         gr.to_bigwig(str(tmp_path / "missing.bw"), chromosome_sizes={"chr1": 1000})
+
+
+def test_to_bigwig_precomputed_does_not_materialize_float_rounding_gaps(tmp_path) -> None:
+    """A change in scale must not turn an uncovered range into data."""
+    import pyBigWig
+
+    expected_coordinates = [(0, 1), (1, 2), (3, 4)]
+
+    for index, scale in enumerate((0.5152221054097652, 0.5152221054097644)):
+        precomputed_coverage = pr.PyRanges(
+            pd.DataFrame(
+                {
+                    "Chromosome": ["chr1"] * 3,
+                    "Start": [0, 1, 3],
+                    "End": [1, 2, 4],
+                    "Score": [3 * scale, scale, scale],
+                },
+            ),
+        )
+
+        path = tmp_path / f"precomputed_{index}.bw"
+        precomputed_coverage.to_bigwig(
+            str(path),
+            chromosome_sizes={"chr1": 10},
+            value_col="Score",
+            precomputed=True,
+        )
+
+        bw = pyBigWig.open(str(path))
+        intervals = bw.intervals("chr1")
+        bw.close()
+
+        assert [(start, end) for start, end, _ in intervals] == expected_coordinates
+        assert [value for _, _, value in intervals] == pytest.approx([3 * scale, scale, scale])
+
+
+def test_to_bigwig_weighted_coverage_does_not_materialize_float_rounding_gaps() -> None:
+    expected_coordinates = [(0, 1), (1, 2), (3, 4)]
+
+    for scale in (0.5152221054097652, 0.5152221054097644):
+        weighted_ranges = pr.PyRanges(
+            {
+                "Chromosome": ["chr1"] * 3,
+                "Start": [0, 1, 3],
+                "End": [1, 2, 4],
+                "Score": [3 * scale, scale, scale],
+            },
+        )
+        result = weighted_ranges.to_bigwig(
+            None,
+            chromosome_sizes={"chr1": 10},
+            value_col="Score",
+            rpm=False,
+            return_data=True,
+        )
+
+        assert list(zip(result["Start"], result["End"], strict=True)) == expected_coordinates
+
+    tiny = pr.PyRanges({"Chromosome": ["chr1"], "Start": [0], "End": [1], "Score": [1e-20]})
+    tiny_result = tiny.to_bigwig(
+        None,
+        chromosome_sizes={"chr1": 1},
+        value_col="Score",
+        rpm=False,
+        return_data=True,
+    )
+    assert tiny_result["Score"].tolist() == [1e-20]
+
+
+def test_to_bigwig_precomputed_validates_arguments() -> None:
+    gr = pr.PyRanges({"Chromosome": ["chr1"], "Start": [0], "End": [1], "Score": [1.0]})
+
+    with pytest.raises(ValueError, match="requires value_col"):
+        gr.to_bigwig(None, chromosome_sizes={"chr1": 1}, precomputed=True, return_data=True)
+
+    with pytest.raises(ValueError, match="incompatible"):
+        gr.to_bigwig(
+            None,
+            chromosome_sizes={"chr1": 1},
+            value_col="Score",
+            divide=True,
+            precomputed=True,
+            return_data=True,
+        )
