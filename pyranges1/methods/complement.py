@@ -53,7 +53,11 @@ def _complement(
 
     col_order = [col for col in df if col in [*by, START_COL, END_COL]]
 
-    factorized = pd.Series(np.zeros(len(df), dtype=np.uint32)) if not by else df.groupby(by).ngroup().astype(np.uint32)
+    factorized = (
+        pd.Series(np.zeros(len(df), dtype=np.uint32))
+        if not by
+        else df.groupby(by, dropna=False).ngroup().astype(np.uint32)
+    )
     # The Rust kernel must see the *same* dtype that we pass for starts/ends
     pos_dtype: np.dtype[Any] = df[START_COL].to_numpy(copy=False).dtype
     grp_dtype: np.dtype[Any] = factorized.to_numpy(copy=False).dtype
