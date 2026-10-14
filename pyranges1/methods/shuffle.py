@@ -22,13 +22,17 @@ def _chromsizes_dict(chromsizes: Any) -> dict:
 def _allowed_segments(sizes: dict, exclude: "PyRanges | None") -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Find the (chromosome, start, end) stretches of the genome outside `exclude`."""
     chromosomes, starts, ends = [], [], []
-    merged = None if exclude is None else exclude.merge_overlaps(use_strand=False)
+    no_cuts = (np.array([], dtype=np.int64), np.array([], dtype=np.int64))
+    cuts: dict = {}
+    if exclude is not None:
+        # Split by chromosome once, not once per chromosome: genomes can have thousands of contigs.
+        merged = exclude.merge_overlaps(use_strand=False)
+        cuts = {
+            chromosome: (on[START_COL].to_numpy(np.int64), on[END_COL].to_numpy(np.int64))
+            for chromosome, on in merged.groupby(CHROM_COL, observed=True, sort=False)
+        }
     for chromosome, size in sizes.items():
-        if merged is None:
-            cuts_start, cuts_end = np.array([], dtype=np.int64), np.array([], dtype=np.int64)
-        else:
-            on = merged[merged[CHROM_COL] == chromosome]
-            cuts_start, cuts_end = on[START_COL].to_numpy(np.int64), on[END_COL].to_numpy(np.int64)
+        cuts_start, cuts_end = cuts.get(chromosome, no_cuts)
         gap_starts = np.concatenate([[0], np.minimum(cuts_end, size)])
         gap_ends = np.concatenate([np.clip(cuts_start, 0, size), [size]])
         keep = gap_ends > gap_starts
@@ -74,6 +78,15 @@ def _place(
     return order[lo], seg_starts[order[lo]] + offset
 
 
+def _rows_by_chromosome(chromosomes: pd.Series, seg_chromosomes: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Pair each chromosome's rows with its segments, in order of first appearance, grouping each side once."""
+    codes, uniques = pd.factorize(chromosomes)
+    rows = np.split(np.argsort(codes, kind="stable"), np.cumsum(np.bincount(codes, minlength=len(uniques)))[:-1])
+    segments_of = {c: np.flatnonzero(seg_chromosomes == c) for c in pd.unique(seg_chromosomes)}
+    no_segments = np.array([], dtype=np.int64)
+    return [(r, segments_of.get(c, no_segments)) for c, r in zip(uniques, rows, strict=True)]
+
+
 def _shuffle(
     self: "PyRanges",
     chromsizes: Any,
@@ -93,9 +106,9 @@ def _shuffle(
     chromosomes = np.empty(len(self), dtype=object)
     starts = np.empty(len(self), dtype=np.int64)
     pools = (
-        [(self[CHROM_COL].to_numpy() == c, seg_chromosomes == c) for c in pd.unique(self[CHROM_COL])]
+        _rows_by_chromosome(self[CHROM_COL], seg_chromosomes)
         if within_chromosomes
-        else [(np.ones(len(self), dtype=bool), np.ones(len(seg_starts), dtype=bool))]
+        else [(np.arange(len(self)), np.arange(len(seg_starts)))]
     )
     for rows, segments in pools:
         chosen, placed = _place(lengths[rows], seg_starts[segments], seg_ends[segments], rng)
