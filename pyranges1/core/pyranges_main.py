@@ -4303,7 +4303,9 @@ class PyRanges(RangeFrame):
         """Summarise bigWig signal over each interval.
 
         Adds one column per statistic, keeping every row and the index. Only the
-        parts of the bigWig that overlap an interval are read, through its index.
+        parts of the bigWig that overlap an interval are read, through its index,
+        unless the intervals are so many that reading whole chromosomes is faster.
+        Requires pyBigWig, runlength and pyarrow.
 
         Parameters
         ----------

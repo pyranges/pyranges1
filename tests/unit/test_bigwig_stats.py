@@ -114,3 +114,17 @@ def test_bigwig_stats_rejects_unknown_stats(tmp_path) -> None:
         gr.bigwig_stats(tmp_path / "a.bw", "median")
     with pytest.raises(ValueError, match="bins"):
         gr.bigwig_stats(tmp_path / "a.bw", bins=0)
+
+
+def test_bigwig_stats_whole_chromosome_reads_agree(tmp_path, monkeypatch) -> None:
+    from pyranges1.methods import bigwig_stats
+
+    rng = np.random.default_rng(4)
+    _write_track(tmp_path / "a.bw", rng)
+    starts = rng.integers(0, 300, 50)
+    gr = pr.PyRanges({"Chromosome": rng.choice(["chr1", "chr2"], 50), "Start": starts, "End": starts + 20})
+    stats = ["mean", "max", "min", "sum", "std"]
+    by_region = gr.bigwig_stats(tmp_path / "a.bw", stats, bins=4, missing=0.0)
+    monkeypatch.setattr(bigwig_stats, "MAX_REGION_READS", 0)
+    whole = gr.bigwig_stats(tmp_path / "a.bw", stats, bins=4, missing=0.0)
+    pd.testing.assert_frame_equal(by_region, whole)
