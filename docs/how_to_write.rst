@@ -44,11 +44,11 @@ The `bigwig <http://genome.ucsc.edu/goldenPath/help/bigWig.html>`_ format differ
 the formats above. Bigwig is a binary format, and it is typically used for large continuous quantitative
 data along a genome sequence.
 
-The pyranges1 library can also create bigwigs, but it needs the library pybigwig and pyrle which are not installed by default.
+The pyranges1 library can also create bigwigs, but it needs the libraries pybigwig and runlength which are not installed by default.
 
 Use this to install it::
 
-	pip install pybigwig pyrle
+	pip install pybigwig runlength
 
 The bigwig writer needs to know the chromosome sizes, e.g. provided as a dictionary {chromosome_name: size}.
 You can also derive chromosome sizes from a fasta file using pyfaidx (see above to install it).

@@ -2,9 +2,9 @@
 
 import logging
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, Literal, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -29,6 +29,7 @@ from pyranges1.core.names import (
     START_COL,
     STRAND_BEHAVIOR_OPPOSITE,
     STRAND_COL,
+    TEMP_INDEX_COL,
     TEMP_TRANSCRIPT_ID_COL,
     USE_STRAND_DEFAULT,
     VALID_BY_TYPES,
@@ -68,7 +69,7 @@ from pyranges1.range_frame.range_frame_validator import InvalidRangesReason
 
 if TYPE_CHECKING:
     import pyfaidx  # type: ignore[import]
-    from pyrle.rledict import Rledict  # type: ignore[import]
+    from runlength import RleBatch  # type: ignore[import-not-found]
 
 
 __all__ = ["PyRanges"]
@@ -168,23 +169,44 @@ class PyRanges(RangeFrame):
 
     """
 
-    def __new__(cls, *args, **kwargs) -> "pr.PyRanges | pd.DataFrame":  # type: ignore[misc]
+    # a frame that loses one of these is no longer a PyRanges: RangeFrame._constructor_from_mgr
+    # rebuilds it as a plain DataFrame.
+    _required_columns: frozenset[str] = frozenset(GENOME_LOC_COLS)
+
+    # built on first use by the loci property: pandas builds frames from a manager without
+    # ever calling __init__, so this cannot be set there alone.
+    _loci: "LociGetter | None" = None
+
+    def __new__(cls, *args, **kwargs) -> "pr.PyRanges":  # type: ignore[misc]
         """Create a new instance of a PyRanges object."""
         # __new__ is a special static method used for creating and
         # returning a new instance of a class. It is called before
         # __init__ and is typically used in scenarios requiring
         # control over the creation of new instances
 
-        # Logic to decide whether to return an instance of PyRanges or a DataFrame
+        # Direct construction always yields a real PyRanges, or raises. The
+        # graceful fallback to a plain DataFrame (e.g. when a pandas operation
+        # like .drop() removes a required column) lives in _constructor instead,
+        # so it only kicks in for pandas' internal frame reconstruction and never
+        # for a user calling PyRanges(...) directly. See geopandas.GeoDataFrame
+        # for the same split between __init__ and _constructor.
         if not args and "data" not in kwargs:
-            df = pd.DataFrame({k: [] for k in GENOME_LOC_COLS})
-            df.__class__ = pr.PyRanges
-            return df
+            return super().__new__(cls)
 
-        df = pd.DataFrame(kwargs.get("../data") or args[0])
-        missing_any_required_columns = not set(GENOME_LOC_COLS).issubset({*df.columns})
+        # pandas hands us a whole DataFrame every time it rebuilds a frame internally, so read
+        # the columns off it rather than building a second frame just to look at them; a call
+        # that names the columns on the way in still has to be built before they can be read.
+        data = kwargs["data"] if "data" in kwargs else args[0]
+        if isinstance(data, pd.DataFrame) and "columns" not in kwargs:
+            columns = data.columns
+        else:
+            columns = pd.DataFrame(*args, **kwargs).columns
+
+        missing_any_required_columns = not set(GENOME_LOC_COLS).issubset({*columns})
         if missing_any_required_columns:
-            return df
+            missing = sorted(set(GENOME_LOC_COLS) - set(columns))
+            msg = f"Cannot construct PyRanges: missing required column(s) {missing}."
+            raise ValueError(msg)
 
         return super().__new__(cls)
 
@@ -199,11 +221,22 @@ class PyRanges(RangeFrame):
 
         super().__init__(*args, **kwargs)
 
-        self._loci = LociGetter(self)
-
     @property
-    def _constructor(self) -> type:
-        return pr.PyRanges
+    def _constructor(self) -> Callable[..., "pr.PyRanges | pd.DataFrame"]:
+        return self._constructor_with_fallback
+
+    @classmethod
+    def _constructor_with_fallback(cls, *args, **kwargs) -> "pr.PyRanges | pd.DataFrame":
+        """Build a PyRanges, falling back to a DataFrame if a required column is missing.
+
+        Used by pandas internally to reconstruct frames from operations (e.g. .drop(),
+        groupby aggregations). See the "Operations that remove a column required for a
+        PyRanges return a DataFrame instead" example above.
+        """
+        df = pd.DataFrame(*args, **kwargs)
+        if not set(GENOME_LOC_COLS).issubset({*df.columns}):
+            return df
+        return cls(df)
 
     def groupby(self, *args, **kwargs) -> "PyRangesDataFrameGroupBy":
         """Groupby PyRanges."""
@@ -409,6 +442,8 @@ class PyRanges(RangeFrame):
         TypeError: The loci accessor does not accept a list. If you meant to retrieve columns, use get_with_loc_columns instead.
 
         """
+        if self._loci is None:
+            self._loci = LociGetter(self)
         return self._loci
 
     def _chrom_and_strand_info(self) -> str:
@@ -756,7 +791,8 @@ class PyRanges(RangeFrame):
 
     def copy(self, *args, **kwargs) -> "pr.PyRanges":
         """Return a copy of the PyRanges."""
-        return ensure_pyranges(super().copy(*args, **kwargs))
+        # a copy keeps every column, so pandas hands this straight back as our own class
+        return self._rebuild_as_self(super().copy(*args, **kwargs))
 
     def _count_overlaps(
         self,
@@ -778,6 +814,8 @@ class PyRanges(RangeFrame):
         match_by: str | list[str] | None = None,
         slack: int = 0,
         overlap_col: str = "Count",
+        calculate_coverage: bool = False,
+        coverage_col: str = "CoverageOverlaps",
     ) -> "PyRanges":
         """Count number of overlaps per interval.
 
@@ -801,6 +839,13 @@ class PyRanges(RangeFrame):
 
         overlap_col : str, default "Count"
             Name of column with overlap counts.
+
+        calculate_coverage : bool, default False
+            Also add the fraction of each interval covered by `other`, as bedtools coverage does. Intervals in
+            `other` are merged first, so a position covered several times counts once. Requires slack=0.
+
+        coverage_col : str, default "CoverageOverlaps"
+            Name of column with the covered fraction, when calculate_coverage is True.
 
         Returns
         -------
@@ -854,6 +899,16 @@ class PyRanges(RangeFrame):
         PyRanges with 3 rows, 5 columns, and 1 index columns.
         Contains 1 chromosomes and 2 strands.
 
+        >>> f1.count_overlaps(f2, overlap_col="C", calculate_coverage=True, coverage_col="F")
+          index  |    Chromosome      Start      End  Strand             C          F
+          int64  |    category        int64    int64  category      uint32    float64
+        -------  ---  ------------  -------  -------  ----------  --------  ---------
+              0  |    chr1                3        6  +                  0        0
+              1  |    chr1                5        7  -                  1        0.5
+              2  |    chr1                8        9  +                  0        0
+        PyRanges with 3 rows, 6 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
+
         >>> annotation = pr.example_data.ensembl_gtf.get_with_loc_columns(['transcript_id', 'Feature'])
         >>> reads = pr.random(1000, chromsizes={'1':150000}, strand=False, seed=123)
         >>> annotation.count_overlaps(reads, overlap_col="NumberOverlaps")
@@ -873,10 +928,21 @@ class PyRanges(RangeFrame):
         Contains 1 chromosomes and 2 strands.
 
         """
+        if coverage_col != "CoverageOverlaps" and not calculate_coverage:
+            msg = "coverage_col can only be provided with calculate_coverage=True."
+            raise ValueError(msg)
+        if slack and calculate_coverage:
+            msg = "calculate_coverage can only be computed with slack=0."
+            raise ValueError(msg)
+
         _self = self.copy()
         _self.loc[:, overlap_col] = _self._count_overlaps(  # noqa: SLF001
             other, strand_behavior=strand_behavior, match_by=match_by, slack=slack
         )
+        if calculate_coverage:
+            from pyranges1.methods.coverage import _fraction_covered
+
+            _self.loc[:, coverage_col] = _fraction_covered(self, other, strand_behavior, match_by)
         return _self
 
     # to do: optimize, doesn't need to split by chromosome, only strand and only if ext_3/5
@@ -1041,6 +1107,80 @@ class PyRanges(RangeFrame):
         result.loc[:, START_COL] = starts
         result.loc[:, END_COL] = ends
         return ensure_pyranges(result)
+
+    def resize_ranges(
+        self,
+        width: int,
+        fix: Literal["start", "end", "center"] = "center",
+        *,
+        use_strand: VALID_USE_STRAND_TYPE = "auto",
+    ) -> "PyRanges":
+        """Give every interval the same width, keeping its start, end or center in place.
+
+        As GenomicRanges::resize: fix="start" keeps the 5' end, fix="end" the 3' end, and
+        fix="center" the center, with any odd base to the right whatever the strand.
+        Intervals are not clipped to the chromosome; see clip_ranges.
+
+        Parameters
+        ----------
+        width : int
+            The new width of every interval, at least 1.
+
+        fix : {"start", "end", "center"}, default "center"
+            Which part of each interval stays in place.
+
+        use_strand : {"auto", True, False}, default "auto"
+            Whether "start" and "end" are the 5' and 3' ends, so on "-" intervals End and
+            Start. The default "auto" means True if PyRanges has valid strands (see
+            .strand_valid). Ignored for fix="center".
+
+        Returns
+        -------
+        PyRanges
+            The intervals with new coordinates, and every other column unchanged.
+
+        See Also
+        --------
+        PyRanges.extend_ranges : lengthen intervals at their 5' and/or 3' ends
+        PyRanges.promoters : the region around each 5' end
+        PyRanges.clip_ranges : clip intervals to chromosome bounds
+
+        Examples
+        --------
+        >>> gr = pr.PyRanges(dict(Chromosome="chr1", Start=[10, 10], End=[20, 20], Strand=["+", "-"]))
+        >>> gr.resize_ranges(4, fix="start")
+          index  |    Chromosome      Start      End  Strand
+          int64  |    str             int64    int64  str
+        -------  ---  ------------  -------  -------  --------
+              0  |    chr1               10       14  +
+              1  |    chr1               16       20  -
+        PyRanges with 2 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
+
+        >>> gr.resize_ranges(3)
+          index  |    Chromosome      Start      End  Strand
+          int64  |    str             int64    int64  str
+        -------  ---  ------------  -------  -------  --------
+              0  |    chr1               13       16  +
+              1  |    chr1               13       16  -
+        PyRanges with 2 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
+
+        The midpoint of each interval:
+
+        >>> gr.resize_ranges(1)
+          index  |    Chromosome      Start      End  Strand
+          int64  |    str             int64    int64  str
+        -------  ---  ------------  -------  -------  --------
+              0  |    chr1               14       15  +
+              1  |    chr1               14       15  -
+        PyRanges with 2 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
+
+        """
+        from pyranges1.methods.resize import _resize
+
+        return _resize(self, width, fix, use_strand=validate_and_convert_use_strand(self, use_strand))
 
     def five_end(
         self,
@@ -2336,8 +2476,8 @@ class PyRanges(RangeFrame):
           int64  |    category        int64    int64  category    str                 int64    int64  str              int64
         -------  ---  ------------  -------  -------  ----------  --------------  ---------  -------  ----------  ----------
               0  |    chr1                3        6  +           chr1                   20       22  +                   15
-              2  |    chr1                8        9  +           chr1                   20       22  +                   12
               1  |    chr1                5        7  -           chr1                    6        7  -                    0
+              2  |    chr1                8        9  +           chr1                   20       22  +                   12
         PyRanges with 3 rows, 9 columns, and 1 index columns.
         Contains 1 chromosomes and 2 strands.
 
@@ -2397,7 +2537,18 @@ class PyRanges(RangeFrame):
         # Unpacked rather than zipped against VALID_GENOMIC_STRAND_INFO: pairing the
         # halves with their strand by position would silently mismap if either the
         # constant or split_on_strand's return order changed.
-        forward_self, reverse_self = split_on_strand(self)
+        # Each strand is searched and ordered on its own, so the plain concat below
+        # groups the result by strand (every forward row, then every reverse row) and
+        # drops the interleaving between strands; preserve_input_order would otherwise
+        # have no effect in this branch (issue #169). Carry each row's position in self
+        # through the split so the halves can be merged back into input order, matching
+        # the direction="any" branch. The index cannot stand in for the position, since
+        # k > 1 duplicates it and the caller's index may be non-unique.
+        ordered_self = self
+        if preserve_input_order:
+            ordered_self = self.copy()
+            ordered_self[TEMP_INDEX_COL] = np.arange(len(self))
+        forward_self, reverse_self = split_on_strand(ordered_self)
         per_strand = [
             RangeFrame(strand_self).nearest_ranges(
                 other=_other,
@@ -2416,7 +2567,11 @@ class PyRanges(RangeFrame):
             )
         ]
 
-        return ensure_pyranges(pd.concat(per_strand))
+        combined = pd.concat(per_strand)
+        if preserve_input_order:
+            combined = combined.sort_values(TEMP_INDEX_COL, kind="stable")
+            del combined[TEMP_INDEX_COL]
+        return ensure_pyranges(combined)
 
     def overlap(  # type: ignore[override]
         self,
@@ -4208,6 +4363,120 @@ class PyRanges(RangeFrame):
 
         return _to_bigbed(self, path, chromosome_sizes, autosql)
 
+    def bigwig_stats(
+        self,
+        path: "str | Path | Mapping[str, str | Path]",
+        stats: str | Iterable[str] = "mean",
+        *,
+        missing: float | None = None,
+        pad: int = 0,
+        bins: int | None = None,
+        use_strand: VALID_USE_STRAND_TYPE = "auto",
+        prefix: str = "",
+    ) -> "PyRanges":
+        """Summarise bigWig signal over each interval.
+
+        Adds one column per statistic, keeping every row and the index. Only the
+        parts of the bigWig that overlap an interval are read, through its index,
+        unless the intervals are so many that reading whole chromosomes is faster.
+        Requires pyBigWig, runlength and pyarrow.
+
+        Parameters
+        ----------
+        path : str, Path or dict
+            A bigWig file, or a dict of {label: file} to summarise several at once;
+            their columns are then named "{label}_{stat}".
+
+        stats : str or list of str, default "mean"
+            Any of "mean", "max", "min", "sum" and "std" (the sample standard deviation,
+            as pyBigWig reports it).
+
+        missing : float, default None
+            Value for bases the bigWig has no data for. None leaves them out, so
+            "mean" is over the covered bases, as pyBigWig and deepTools compute it;
+            0.0 makes it the mean over the whole interval.
+
+        pad : int, default 0
+            Bases added to both ends of each interval before reading, clamped to the
+            chromosome.
+
+        bins : int, default None
+            Split each interval into this many equal-width bins and add one column per
+            bin and statistic, "{stat}_{i}": a regions x bins signal matrix, as deepTools
+            computeMatrix builds.
+
+        use_strand : {"auto", True, False}, default "auto"
+            With bins, number them from the 5' end, so bins of "-" intervals run from End
+            to Start. The default "auto" means True if PyRanges has valid strands (see
+            .strand_valid).
+
+        prefix : str, default ""
+            Prepended to every new column name.
+
+        Returns
+        -------
+        PyRanges
+            PyRanges with the new columns. Intervals on chromosomes the bigWig does not
+            have, or with no covered bases, get NaN.
+
+        See Also
+        --------
+        pyranges1.read_bigwig : read a whole bigWig as intervals
+        PyRanges.to_bigwig : write coverage as a bigWig
+
+        Examples
+        --------
+        >>> path = pr.example_data.files["bigwig.bw"]
+        >>> pr.read_bigwig(path)
+          index  |      Chromosome    Start      End      Value
+          int64  |        category    int64    int64    float64
+        -------  ---  ------------  -------  -------  ---------
+              0  |               1        0        1        0.1
+              1  |               1        1        2        0.2
+              2  |               1        2        3        0.3
+              3  |               1      100      150        1.4
+              4  |               1      150      151        1.5
+              5  |              10      200      300        2
+        PyRanges with 6 rows, 4 columns, and 1 index columns.
+        Contains 2 chromosomes.
+
+        >>> gr = pr.PyRanges({"Chromosome": ["1", "1", "10"], "Start": [0, 100, 250], "End": [10, 151, 400]})
+        >>> gr.bigwig_stats(path, ["mean", "max"])
+          index  |      Chromosome    Start      End       mean        max
+          int64  |             str    int64    int64    float64    float64
+        -------  ---  ------------  -------  -------  ---------  ---------
+              0  |               1        0       10    0.2            0.3
+              1  |               1      100      151    1.40196        1.5
+              2  |              10      250      400    2              2
+        PyRanges with 3 rows, 5 columns, and 1 index columns.
+        Contains 2 chromosomes.
+
+        >>> gr.bigwig_stats(path, missing=0.0)
+          index  |      Chromosome    Start      End       mean
+          int64  |             str    int64    int64    float64
+        -------  ---  ------------  -------  -------  ---------
+              0  |               1        0       10   0.06
+              1  |               1      100      151   1.40196
+              2  |              10      250      400   0.666667
+        PyRanges with 3 rows, 4 columns, and 1 index columns.
+        Contains 2 chromosomes.
+
+        >>> gr.bigwig_stats(path, bins=2)
+          index  |      Chromosome    Start      End     mean_0     mean_1
+          int64  |             str    int64    int64    float64    float64
+        -------  ---  ------------  -------  -------  ---------  ---------
+              0  |               1        0       10        0.2  nan
+              1  |               1      100      151        1.4    1.40385
+              2  |              10      250      400        2    nan
+        PyRanges with 3 rows, 5 columns, and 1 index columns.
+        Contains 2 chromosomes.
+
+        """
+        from pyranges1.methods.bigwig_stats import _bigwig_stats, _reverse_rows
+
+        reverse = _reverse_rows(self, use_strand=bins is not None and validate_and_convert_use_strand(self, use_strand))
+        return _bigwig_stats(self, path, stats, missing, pad, bins, reverse, prefix)
+
     def to_bigwig(
         self: "pr.PyRanges",
         path: None = None,
@@ -4216,6 +4485,7 @@ class PyRanges(RangeFrame):
         *,
         divide: bool = False,
         rpm: bool = True,
+        precomputed: bool = False,
         return_data=False,
     ) -> "PyRanges | None":
         """Compute coverage (interval-based, or using a numerical value column) and write to bigwig.
@@ -4224,6 +4494,9 @@ class PyRanges(RangeFrame):
         If value_col is provided, the score is the sum of values of all intervals spanning that position.
         The score per position is then reduced to a minimal number of ranges with constant coverage
         (i.e. like a run-length encoding), and written in bigwig format to the provided path.
+
+        With ``precomputed=True``, skip coverage computation and write each input range with its value
+        from ``value_col``; with this option, input ranges must be non-overlapping.
 
         Note
         ----
@@ -4243,13 +4516,21 @@ class PyRanges(RangeFrame):
         value_col : str, default None
             Name of column to compute coverage of.
             If None, compute coverage (i.e. number of intervals spanning each position).
-
-        rpm : True
-            Whether to normalize data by dividing by total number of intervals and multiplying by
-            1e6.
+            Required when ``precomputed=True``; in that mode, its values are written directly.
 
         divide : bool, default False
-            (Only useful with value_col) Divide value coverage by regular coverage and take log2.
+            (Only useful with value_col) Divide value coverage by regular coverage and take log2. Incompatible
+            with ``precomputed=True``.
+
+        rpm : bool, default True
+            Whether to normalize data by dividing by total number of intervals and multiplying by 1e6. Ignored
+            when ``precomputed=True``.
+
+        precomputed : bool, default False
+            Write the ranges and ``value_col`` values directly, without
+            computing coverage. ``rpm`` is ignored in this mode. The ranges must be non-overlapping
+            (ignoring strand). To check, use:
+            ``assert len(gr.max_disjoint_overlaps(use_strand=False)) == len(gr)``
 
         return_data : bool, default False
             Whether to return the data that would be written to bigwig as a PyRanges.
@@ -4257,7 +4538,7 @@ class PyRanges(RangeFrame):
         Note
         ----
 
-        Requires pybigwig and pyrle to be installed.
+        Requires pybigwig and runlength to be installed.
 
 
         Examples
@@ -4313,10 +4594,20 @@ class PyRanges(RangeFrame):
         PyRanges with 6 rows, 4 columns, and 1 index columns.
         Contains 1 chromosomes.
 
+        Write already-computed, non-overlapping values directly:
+
+        >>> signal = pr.PyRanges({"Chromosome": ["chr1", "chr1"],
+        ...                       "Start": [1, 6], "End": [4, 9], "Value": [0.5, 1.5]})
+        >>> signal.to_bigwig("signal.bw", {"chr1": 10}, value_col="Value", precomputed=True)  # doctest: +SKIP
+
         """
         from pyranges1.core.out import _to_bigwig
 
-        _chromosome_sizes = pr.example_data.chromsizes if chromosome_sizes is None else chromosome_sizes
+        _chromosome_sizes = (
+            self.groupby(CHROM_COL, observed=True)[END_COL].max().to_dict()
+            if chromosome_sizes is None
+            else chromosome_sizes
+        )
 
         result = _to_bigwig(
             self=self,
@@ -4325,6 +4616,7 @@ class PyRanges(RangeFrame):
             rpm=rpm,
             divide=divide,
             value_col=value_col,
+            precomputed=precomputed,
             return_data=return_data,
         )
 
@@ -4568,109 +4860,68 @@ class PyRanges(RangeFrame):
         strand: VALID_USE_STRAND_TYPE = "auto",
         *,
         rpm: bool = False,
-    ) -> "Rledict":
-        """Return as Rledict.
+    ) -> "RleBatch":
+        """Return the coverage, or the sum of a numerical column, as run-length encoded sequences.
 
-        Create collection of Rles representing the coverage or other numerical value.
+        Requires runlength to be installed.
 
         Parameters
         ----------
         value_col : str, default None
-            Numerical column to create Rledict from.
+            Numerical column to sum over the intervals covering each position.
+            By default, count the intervals.
 
         strand : bool, default None, i.e. auto
-            Whether to treat strands serparately.
+            Whether to treat strands separately.
 
         rpm : bool, default False
             Normalize by multiplying with `1e6/(number_intervals)`.
 
         Returns
         -------
-        pyrle.Rledict
+        runlength.RleBatch
 
-            Rle with coverage or other info from the PyRanges.
+            One sequence per chromosome, or per chromosome and strand, starting
+            at position 0. Positions no interval covers are 0.
 
-        """
-        broken_examples = (  # noqa:F841
-            """
+        See Also
+        --------
+        PyRanges.to_bigwig : write the coverage to a bigwig file
 
         Examples
         --------
-        # >>> d = {'Chromosome': ['chr1', 'chr1', 'chr1'], 'Start': [3, 8, 5],
-        # ...      'End': [6, 9, 7], 'Score': [0.1, 5, 3.14], 'Strand': ['+', '+', '-']}
-        # >>> gr = pr.PyRanges(d)
-        # >>> gr.to_rle()
-        # chr1 +
-        # --
-        # +--------+-----+-----+-----+-----+
-        # | Runs   | 3   | 3   | 2   | 1   |
-        # |--------+-----+-----+-----+-----|
-        # | Values | 0.0 | 1.0 | 0.0 | 1.0 |
-        # +--------+-----+-----+-----+-----+
-        # Rle of length 9 containing 4 elements (avg. length 2.25)
-        # <BLANKLINE>
-        # chr1 -
-        # --
-        # +--------+-----+-----+
-        # | Runs   | 5   | 2   |
-        # |--------+-----+-----|
-        # | Values | 0.0 | 1.0 |
-        # +--------+-----+-----+
-        # Rle of length 7 containing 2 elements (avg. length 3.5)
-        # RleDict object with 2 chromosomes/strand pairs.
+        >>> d = {'Chromosome': ['chr1', 'chr1', 'chr1'], 'Start': [3, 8, 5],
+        ...      'End': [6, 9, 7], 'Score': [0.1, 5, 3.14], 'Strand': ['+', '+', '-']}
+        >>> gr = pr.PyRanges(d)
+        >>> gr.to_rle()
+        RleBatch(keys=2, runs=6, dtype=Int64)
+          ('chr1', '+'): length=9, values=[0, 1, 0, 1]
+          ('chr1', '-'): length=7, values=[0, 1]
 
-        # >>> gr.to_rle(value_col="Score")
-        # chr1 +
-        # --
-        # +--------+-----+-----+-----+-----+
-        # | Runs   | 3   | 3   | 2   | 1   |
-        # |--------+-----+-----+-----+-----|
-        # | Values | 0.0 | 0.1 | 0.0 | 5.0 |
-        # +--------+-----+-----+-----+-----+
-        # Rle of length 9 containing 4 elements (avg. length 2.25)
-        # <BLANKLINE>
-        # chr1 -
-        # --
-        # +--------+-----+------+
-        # | Runs   | 5   | 2    |
-        # |--------+-----+------|
-        # | Values | 0.0 | 3.14 |
-        # +--------+-----+------+
-        # Rle of length 7 containing 2 elements (avg. length 3.5)
-        # RleDict object with 2 chromosomes/strand pairs.
+        >>> gr.to_rle().to_pandas()
+          Chromosome Strand  start  end  value
+        0       chr1      +      0    3      0
+        1       chr1      +      3    6      1
+        2       chr1      +      6    8      0
+        3       chr1      +      8    9      1
+        4       chr1      -      0    5      0
+        5       chr1      -      5    7      1
 
-        # >>> gr.to_rle(value_col="Score", strand=False)
-        # chr1
-        # +--------+-----+-----+------+------+-----+-----+
-        # | Runs   | 3   | 2   | 1    | 1    | 1   | 1   |
-        # |--------+-----+-----+------+------+-----+-----|
-        # | Values | 0.0 | 0.1 | 3.24 | 3.14 | 0.0 | 5.0 |
-        # +--------+-----+-----+------+------+-----+-----+
-        # Rle of length 9 containing 6 elements (avg. length 1.5)
-        # Unstranded Rledict object with 1 chromosome.
+        >>> gr.to_rle("Score", strand=False).to_pandas()
+          Chromosome  start  end  value
+        0       chr1      0    3   0.00
+        1       chr1      3    5   0.10
+        2       chr1      5    6   3.24
+        3       chr1      6    7   3.14
+        4       chr1      7    8   0.00
+        5       chr1      8    9   5.00
 
-        # >>> gr.to_rle(rpm=True)
-        # chr1 +
-        # --
-        # +--------+-----+-------------------+-----+-------------------+
-        # | Runs   | 3   | 3                 | 2   | 1                 |
-        # |--------+-----+-------------------+-----+-------------------|
-        # | Values | 0.0 | 333333.3333333333 | 0.0 | 333333.3333333333 |
-        # +--------+-----+-------------------+-----+-------------------+
-        # Rle of length 9 containing 4 elements (avg. length 2.25)
-        # <BLANKLINE>
-        # chr1 -
-        # --
-        # +--------+-----+-------------------+
-        # | Runs   | 5   | 2                 |
-        # |--------+-----+-------------------|
-        # | Values | 0.0 | 333333.3333333333 |
-        # +--------+-----+-------------------+
-        # Rle of length 7 containing 2 elements (avg. length 3.5)
-        # Rledict object with 2 chromosomes/strand pairs.
+        >>> gr.to_rle(rpm=True).get(("chr1", "-"))
+        Rle(length=7, runs=2, dtype=Float64)
+          runs:   [5, 2]
+          values: [0.0, 333333.3333333333]
+
         """
-        )
-
         if strand is None:
             strand = self.strand_valid
 
@@ -4685,6 +4936,60 @@ class PyRanges(RangeFrame):
             strand=strand,
             rpm=rpm,
         )
+
+    def promoters(
+        self,
+        upstream: int = 2000,
+        downstream: int = 200,
+        *,
+        use_strand: VALID_USE_STRAND_TYPE = "auto",
+    ) -> "PyRanges":
+        """Return the promoter region around the 5' end of each interval.
+
+        As GenomicRanges::promoters: [TSS - upstream, TSS + downstream), where the TSS is
+        Start on "+" and unstranded intervals and End on "-" ones, mirrored on "-". The
+        result has one row per interval, and is not clipped to the chromosome; see
+        clip_ranges.
+
+        Parameters
+        ----------
+        upstream : int, default 2000
+            Bases before the 5' end.
+
+        downstream : int, default 200
+            Bases from the 5' end on, into the interval.
+
+        use_strand : {"auto", True, False}, default "auto"
+            Whether "-" intervals start at End. The default "auto" means True if PyRanges
+            has valid strands (see .strand_valid).
+
+        Returns
+        -------
+        PyRanges
+            The promoters, and every other column unchanged.
+
+        See Also
+        --------
+        PyRanges.five_end : the 5' end of each interval
+        PyRanges.upstream : the region upstream of each interval
+        PyRanges.clip_ranges : clip intervals to chromosome bounds
+
+        Examples
+        --------
+        >>> gr = pr.PyRanges(dict(Chromosome="chr1", Start=[100, 100], End=[150, 150], Strand=["+", "-"]))
+        >>> gr.promoters(upstream=20, downstream=5)
+          index  |    Chromosome      Start      End  Strand
+          int64  |    str             int64    int64  str
+        -------  ---  ------------  -------  -------  --------
+              0  |    chr1               80      105  +
+              1  |    chr1              145      170  -
+        PyRanges with 2 rows, 4 columns, and 1 index columns.
+        Contains 1 chromosomes and 2 strands.
+
+        """
+        from pyranges1.methods.resize import _promoters
+
+        return _promoters(self, upstream, downstream, use_strand=validate_and_convert_use_strand(self, use_strand))
 
     def upstream(
         self: "PyRanges",
@@ -5000,7 +5305,8 @@ class PyRanges(RangeFrame):
         """
         if not self.has_strand:
             return self
-        return self.drop_and_return(STRAND_COL, axis=1)
+        # Strand isn't a required column, so this drop can never fall back to a DataFrame.
+        return cast("PyRanges", self.drop_and_return(STRAND_COL, axis=1))
 
     def flip_strand(self: "PyRanges") -> "PyRanges":
         """Flip the strand of every interval (+ → - and - → +).
@@ -6320,6 +6626,70 @@ class PyRanges(RangeFrame):
             seq = gr.groupby(group_by, as_index=True).agg({sequence_column: "".join})[sequence_column]
 
         return seq.astype(object)
+
+    def shuffle_ranges(
+        self,
+        chromsizes: "dict[str | int, int] | pd.DataFrame | pyfaidx.Fasta",
+        *,
+        within_chromosomes: bool = False,
+        exclude: "PyRanges | None" = None,
+        seed: "int | np.random.Generator | None" = None,
+    ) -> "PyRanges":
+        """Move each interval to a random place in the genome, keeping its length.
+
+        The null model of bedtools shuffle: every place an interval fits is equally
+        likely. Strand, the index and every other column are kept; only Chromosome,
+        Start and End change.
+
+        Parameters
+        ----------
+        chromsizes : dict, DataFrame or pyfaidx.Fasta
+            Chromosome sizes, as clip_ranges takes them. Intervals are placed only on
+            these chromosomes.
+
+        within_chromosomes : bool, default False
+            Keep each interval on its own chromosome.
+
+        exclude : PyRanges, optional
+            Regions no interval may overlap, e.g. a blacklist or assembly gaps. Strand is
+            ignored.
+
+        seed : int or numpy.random.Generator, optional
+            For a reproducible shuffle.
+
+        Returns
+        -------
+        PyRanges
+            The intervals at their new places.
+
+        Raises
+        ------
+        ValueError
+            If an interval fits nowhere, or a chromosome of self is missing from chromsizes.
+
+        See Also
+        --------
+        pyranges1.random : random intervals
+        PyRanges.clip_ranges : clip intervals to chromosome bounds
+
+        Examples
+        --------
+        >>> gr = pr.PyRanges(dict(Chromosome=["chr1", "chr2"], Start=[0, 5], End=[10, 8], Name=["a", "b"]))
+        >>> shuffled = gr.shuffle_ranges({"chr1": 1000, "chr2": 500}, seed=0)
+        >>> (shuffled["End"] - shuffled["Start"]).tolist(), shuffled["Name"].tolist()
+        ([10, 3], ['a', 'b'])
+
+        Keep each interval on its own chromosome, and out of excluded regions:
+
+        >>> blacklist = pr.PyRanges(dict(Chromosome=["chr1"], Start=[0], End=[900]))
+        >>> on_chr1 = gr.shuffle_ranges({"chr1": 1000, "chr2": 500}, within_chromosomes=True, exclude=blacklist, seed=1)
+        >>> on_chr1["Chromosome"].tolist(), bool(on_chr1["Start"].iloc[0] >= 900)
+        (['chr1', 'chr2'], True)
+
+        """
+        from pyranges1.methods.shuffle import _shuffle
+
+        return _shuffle(self, chromsizes, within_chromosomes=within_chromosomes, exclude=exclude, seed=seed)
 
     def clip_ranges(
         self: "PyRanges",
