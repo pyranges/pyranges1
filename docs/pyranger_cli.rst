@@ -38,9 +38,18 @@ Every pyranger command line must begin with one of these possible readers:
 
 - :func:`read_bed <pyranges1.read_bed>` <path> [<options>]
 - :func:`read_gtf <pyranges1.read_gtf>` <path> [<options>]
+- :func:`read_gff <pyranges1.read_gff>` <path> [<options>]
 - :func:`read_gff3 <pyranges1.read_gff3>` <path> [<options>]
 - :func:`read_bam <pyranges1.read_bam>` <path> [<options>]
 - :func:`read_bigwig <pyranges1.read_bigwig>` <path> [<options>]
+- :func:`read_bigbed <pyranges1.read_bigbed>` <path> [<options>]
+- :func:`read_sam <pyranges1.read_sam>` <path> [<options>]
+- :func:`read_cram <pyranges1.read_cram>` <path> [<options>]
+- :func:`read_vcf <pyranges1.read_vcf>` <path> [<options>]
+- :func:`read_pairs <pyranges1.read_pairs>` <path> [<options>]
+- :func:`read_paf <pyranges1.read_paf>` <path> [<options>]
+- :func:`read_narrowPeak <pyranges1.read_narrowPeak>` <path> [<options>]
+- :func:`read_parquet <pyranges1.read_parquet>` <path> [<options>]
 - read_csv  <path> [<options>]   # wrapped from Pandas
 
 
