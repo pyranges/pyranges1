@@ -57,6 +57,18 @@ def test_read_bed_region(tmp_path) -> None:
     region = pr.read_bed(path, region="chr1:9930-9960")
     assert _span(region) == _span(full[(full["Start"] < 9960) & (full["End"] > 9929)])
     assert list(region.columns) == list(full.columns)
-    assert len(pr.read_bed(path, region="chrZ:1-10")) == 0
+    empty = pr.read_bed(path, region="chrZ:1-10")
+    assert len(empty) == 0
+    # An empty result has the same columns and dtypes as any other.
+    assert list(empty.columns) == list(full.columns)
+    assert [d.kind for d in empty.dtypes] == [d.kind for d in region.dtypes]
     with pytest.raises(ValueError, match="tabix"):
         pr.read_bed(pr.example_data.files["aorta.bed"], region="chr1:1-100")
+
+
+def test_read_bam_region_without_index(tmp_path) -> None:
+    pytest.importorskip("pysam")
+    bam = tmp_path / "smaller.bam"
+    shutil.copy(pr.example_data.files["smaller.bam"], bam)
+    with pytest.raises(ValueError, match="samtools index"):
+        pr.read_bam(bam, region="chr1")

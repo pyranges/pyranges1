@@ -1,6 +1,7 @@
+import itertools
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import gtfreader
 import numpy as np
@@ -82,12 +83,17 @@ def _read_bed_region(path: Path, region: str, columns: list[str]) -> "PyRanges":
             lines = list(tabix.fetch(region=_without_commas(region)))
         except ValueError:  # a chromosome the index does not have
             lines = []
-    if not lines:
+        # With nothing in the region, the file's first record gives the columns and
+        # dtypes, so an empty result has the same shape as any other.
+        first = lines[:1] or list(itertools.islice(tabix.fetch(), 1))
+    if not first:
         return ensure_pyranges(
             pd.DataFrame({c: pd.Series(dtype="int64") for c in columns[:3]}).astype({"Chromosome": "category"})
         )
-    names = columns[: len(lines[0].split("\t"))]
-    df = pd.read_csv(StringIO("\n".join(lines)), sep="\t", header=None, names=names)
+    names = columns[: len(first[0].split("\t"))]
+    df = pd.read_csv(StringIO("\n".join(lines or first)), sep="\t", header=None, names=names)
+    if not lines:
+        df = df.iloc[:0]
     _as_sorted_categorical(df, ("Chromosome", "Strand"))
     return ensure_pyranges(df)
 
@@ -1083,6 +1089,16 @@ _BIGBED_AUTOSQL_TO_PYRANGES = {
 }
 
 
+def _alignments(af: Any, f: "str | Path", region: str | None) -> Any:
+    """Iterate over the reads of an open pysam file, or over those overlapping `region`."""
+    if not region:
+        return af
+    if not af.has_index():
+        msg = f"{f}: region= needs a BAM or CRAM file with a .bai, .csi or .crai index (`samtools index`)."
+        raise ValueError(msg)
+    return af.fetch(region=_without_commas(region))
+
+
 def _read_pysam_alignment(
     f: "str | Path",
     mode: Literal["r", "rb", "rc"],
@@ -1128,7 +1144,7 @@ def _read_pysam_alignment(
     quals: list[str | None] = []
 
     with pysam.AlignmentFile(str(f), mode, **open_kwargs) as af:
-        for read in af.fetch(region=_without_commas(region)) if region else af:
+        for read in _alignments(af, f, region):
             if read.is_unmapped or read.mapping_quality < mapq:
                 continue
             if required_flag and (read.flag & required_flag) != required_flag:
