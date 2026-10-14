@@ -13,7 +13,7 @@ from pyranges1.core.pyranges_helpers import ensure_pyranges
 from pyranges1.core.pyranges_main import PyRanges
 
 if TYPE_CHECKING:
-    from pyrle import RleDict  # type: ignore[import]
+    from runlength import RleBatch  # type: ignore[import-not-found]
 
 GTF_COLUMNS_TO_PYRANGES = {
     "seqname": "Chromosome",
@@ -174,35 +174,17 @@ def _to_bed(
     )
 
 
-def _merged_runs(rles: "RleDict") -> "RleDict":
-    """Merge consecutive runs holding the same value, in every track.
+def _nonzero_runs(rles: "RleBatch") -> pd.DataFrame:
+    """Return the runs of every track as Chromosome, Start, End and Score, without zero-valued runs."""
+    runs = rles.to_pandas().rename(columns={"start": START_COL, "end": END_COL, "value": BIGWIG_SCORE_COL})
+    runs = runs.astype({CHROM_COL: "category", BIGWIG_SCORE_COL: np.float64})
+    return runs[runs[BIGWIG_SCORE_COL] != 0]
 
-    This is what ``pyrle``'s ``defragment`` is for, but that implementation
-    zeroes the value whenever the merged result collapses to a single run --
-    ``Rle([5], [3.0]).defragment()`` yields a value of ``0.0``. Since
-    ``to_ranges`` then discards zero-valued runs as uncovered, relying on it
-    silently deletes any track that reduces to one run.
 
-    ``NaN`` is treated as equal to ``NaN`` so that adjacent undefined runs
-    merge, matching ``defragment``'s behaviour on inputs where it is correct.
-    """
-    from pyrle import Rle, RleDict
-
-    merged = {}
-    for chromosome, rle in rles.items():
-        runs = np.asarray(rle.runs)
-        values = np.asarray(rle.values, dtype=float)
-        if values.size <= 1:
-            merged[chromosome] = Rle(runs.copy(), values.copy())
-            continue
-        previous, current = values[:-1], values[1:]
-        same = (current == previous) | (np.isnan(current) & np.isnan(previous))
-        starts = np.concatenate(([0], np.flatnonzero(~same) + 1))
-        merged_values = values[starts]
-        # `defragment` normalises negative zero; keep that.
-        merged_values[merged_values == 0] = 0.0
-        merged[chromosome] = Rle(np.add.reduceat(runs, starts), merged_values)
-    return RleDict(merged)
+def _log2(values: np.ndarray) -> np.ndarray:
+    # Callbacks run on worker threads, where numpy's error state is the default.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.log2(values)
 
 
 def _to_bigwig(
@@ -235,15 +217,14 @@ def _to_bigwig(
             raise ValueError(msg)
         df = self.get_with_loc_columns(value_col).rename(columns={value_col: BIGWIG_SCORE_COL})
     elif not divide:
-        rles = self.to_rle(rpm=rpm, strand=False, value_col=value_col)
-        df = rles.to_ranges()
+        df = _nonzero_runs(self.to_rle(rpm=rpm, strand=False, value_col=value_col))
     else:
-        numerator = self.to_rle(rpm=rpm, strand=False, value_col=value_col)
-        denominator = self.to_rle(rpm=rpm, strand=False)
-        ratio = numerator / denominator
-        for rle in ratio.values():
-            rle.values = np.log2(rle.values)
-        df = _merged_runs(ratio).to_ranges()
+        # rpm scales numerator and denominator alike, so it cancels in the ratio;
+        # scaling first would only add rounding noise that splits equal ratios.
+        numerator = self.to_rle(strand=False, value_col=value_col)
+        denominator = self.to_rle(strand=False)
+        ratio = (numerator / denominator).map(_log2, backend="numpy")
+        df = _nonzero_runs(ratio)
     gr = ensure_pyranges(df)
     gr = gr.remove_strand()
     gr = gr.sort_ranges()

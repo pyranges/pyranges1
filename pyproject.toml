@@ -34,7 +34,7 @@ dependencies = ["pandas", "tabulate", "natsort", "ruranges>=0.1.8", "gtfreader>=
 
 [project.optional-dependencies]
 add-ons = [
-    "pyrle >= 0.0.43",
+    "runlength >= 0.1",
     "bamread",
     "pyfaidx",
     "pyBigWig",
@@ -92,7 +92,7 @@ basepython =
     py313: python3.13
 deps =
     pandas
-    pyrle >= 0.0.41
+    runlength >= 0.1
     bamread
     pyBigWig
     pyfaidx
