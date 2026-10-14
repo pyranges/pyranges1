@@ -1,5 +1,4 @@
 import logging
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -447,10 +446,8 @@ def read_bam(
     try:
         import bamread  # type: ignore[import]
     except ImportError:
-        LOGGER.exception(
-            "bamread must be installed to read bam. Use `conda install -c bioconda bamread` or `pip install bamread` to install it.",
-        )
-        sys.exit(1)
+        msg = "bamread must be installed to read bam. Use `conda install -c bioconda bamread` or `pip install bamread` to install it."
+        raise ImportError(msg) from None
 
     if bamread.__version__ in {
         "0.0.1",
@@ -463,10 +460,8 @@ def read_bam(
         "0.0.8",
         "0.0.9",
     }:
-        LOGGER.exception(
-            "bamread not recent enough. Must be 0.0.10 or higher. Use `conda install -c bioconda 'bamread>=0.0.10'` or `pip install bamread>=0.0.10` to install it.",
-        )
-        sys.exit(1)
+        msg = "bamread not recent enough. Must be 0.0.10 or higher. Use `conda install -c bioconda 'bamread>=0.0.10'` or `pip install bamread>=0.0.10` to install it."
+        raise ImportError(msg)
 
     if sparse:
         return ensure_pyranges(bamread.read_bam(path, mapq, required_flag, filter_flag))
@@ -810,10 +805,8 @@ def read_bigwig(f: str | Path) -> "PyRanges":
     try:
         import pyBigWig  # type: ignore[import]
     except ModuleNotFoundError:
-        LOGGER.exception(
-            "pyBigWig must be installed to read bigwigs. Use `pip install pyBigWig` to install it.",
-        )
-        sys.exit(1)
+        msg = "pyBigWig must be installed to read bigwigs. Use `pip install pyBigWig` to install it."
+        raise ImportError(msg) from None
 
     path = Path(f)
     bw = pyBigWig.open(str(path))
@@ -906,11 +899,11 @@ def _read_pysam_alignment(
     try:
         import pysam  # type: ignore[import]
     except ImportError:
-        LOGGER.exception(
+        msg = (
             "pysam must be installed to read SAM/CRAM files. "
-            "Use `conda install -c bioconda pysam` or `pip install pysam`.",
+            "Use `conda install -c bioconda pysam` or `pip install pysam`."
         )
-        sys.exit(1)
+        raise ImportError(msg) from None
 
     open_kwargs: dict = {}
     if reference_filename is not None:
@@ -1121,10 +1114,8 @@ def read_bigbed(f: "str | Path") -> "PyRanges":
     try:
         import pyBigWig  # type: ignore[import]
     except ModuleNotFoundError:
-        LOGGER.exception(
-            "pyBigWig must be installed to read BigBed files. Use `pip install pyBigWig` to install it.",
-        )
-        sys.exit(1)
+        msg = "pyBigWig must be installed to read BigBed files. Use `pip install pyBigWig` to install it."
+        raise ImportError(msg) from None
 
     import re
     from io import StringIO
@@ -1594,10 +1585,8 @@ def read_parquet(
     try:
         df = pd.read_parquet(Path(f), columns=columns, **kwargs)
     except ImportError:
-        LOGGER.exception(
-            "A Parquet engine must be installed to read Parquet files. Use `pip install pyarrow` to install one.",
-        )
-        sys.exit(1)
+        msg = "A Parquet engine must be installed to read Parquet files. Use `pip install pyarrow` to install one."
+        raise ImportError(msg) from None
 
     for col in ("Chromosome", "Strand"):
         if col in df.columns and not isinstance(df[col].dtype, pd.CategoricalDtype):
@@ -1661,11 +1650,11 @@ def read_vcf(
     try:
         import pysam  # type: ignore[import]
     except ImportError:
-        LOGGER.exception(
+        msg = (
             "pysam must be installed to read VCF/BCF files. "
-            "Use `conda install -c bioconda pysam` or `pip install pysam`.",
+            "Use `conda install -c bioconda pysam` or `pip install pysam`."
         )
-        sys.exit(1)
+        raise ImportError(msg) from None
 
     vf = pysam.VariantFile(str(Path(f)))
     iterator = vf.fetch(region=region) if region else vf

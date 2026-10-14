@@ -1,7 +1,6 @@
 """Statistics useful for genomics."""
 
 import logging
-import sys
 from collections import defaultdict
 from collections.abc import Iterable
 from itertools import combinations_with_replacement
@@ -229,10 +228,10 @@ def fisher_exact(tp: Series, fp: Series, fn: Series, tn: Series, pseudocount: in
     try:
         from fisher import pvalue_npy  # type: ignore[import]
     except ImportError:
-        LOGGER.exception(
-            "fisher needs to be installed to use fisher exact. pip install fisher or conda install -c bioconda fisher.",
+        msg = (
+            "fisher needs to be installed to use fisher exact. pip install fisher or conda install -c bioconda fisher."
         )
-        sys.exit(-1)
+        raise ImportError(msg) from None
 
     _tp = np.array(tp, dtype=np.uint)
     _fp = np.array(fp, dtype=np.uint)
