@@ -3,13 +3,16 @@
 import shutil
 import tempfile
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, cast
 
 # Fetched with the standard library; any other scheme goes through fsspec.
 _STDLIB_SCHEMES = ("http", "https", "ftp")
+# Seconds to wait for a server to connect or send more data, so a stalled one
+# raises instead of hanging the reader.
+_TIMEOUT = 60
 
 
 def _is_url(f: object) -> bool:
@@ -19,7 +22,7 @@ def _is_url(f: object) -> bool:
 
 
 @contextmanager
-def _local_copy(url: str, storage_options: dict | None) -> Iterator[Path]:
+def _local_copy(url: str, storage_options: dict | None) -> Generator[Path]:
     """Copy the file at `url` to a temporary file, removed on exit.
 
     The copy keeps the URL's suffixes, so compression is recognised as for a local
@@ -30,7 +33,7 @@ def _local_copy(url: str, storage_options: dict | None) -> Iterator[Path]:
     suffix = "".join(Path(url.split("?")[0]).suffixes)
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as copy:
         if scheme in _STDLIB_SCHEMES and not storage_options:
-            with urllib.request.urlopen(url) as source:  # noqa: S310 -- the scheme is checked above
+            with urllib.request.urlopen(url, timeout=_TIMEOUT) as source:  # noqa: S310 -- the scheme is checked above
                 shutil.copyfileobj(source, copy, 1 << 23)
         else:
             try:
