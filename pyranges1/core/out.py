@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
-from natsort import natsorted  # type: ignore[import]
+from natsort import natsorted
 from pandas.core.frame import DataFrame
 
 from pyranges1.core.names import BIGWIG_SCORE_COL, CHROM_COL, END_COL, PANDAS_COMPRESSION_TYPE, START_COL
@@ -13,7 +13,7 @@ from pyranges1.core.pyranges_helpers import ensure_pyranges
 from pyranges1.core.pyranges_main import PyRanges
 
 if TYPE_CHECKING:
-    from runlength import RleBatch  # type: ignore[import-not-found]
+    from runlength import RleBatch
 
 GTF_COLUMNS_TO_PYRANGES = {
     "seqname": "Chromosome",
@@ -199,7 +199,7 @@ def _to_bed_tabix(df: DataFrame, path: str | Path | None, compression: PANDAS_CO
         msg = "tabix=True writes a bgzip-compressed file: give a path ending in .gz or .bgz, and no other compression."
         raise ValueError(msg)
     try:
-        import pysam  # type: ignore[import]
+        import pysam
     except ImportError:
         msg = "pysam must be installed to write a tabix-indexed BED file. Use `pip install pysam`."
         raise ImportError(msg) from None
@@ -238,7 +238,7 @@ def _to_bigwig(
     return_data: bool = False,
 ) -> PyRanges | None:
     try:
-        import pyBigWig  # type: ignore[import]
+        import pyBigWig
     except ModuleNotFoundError:
         msg = "pybigwig must be installed to create bigwigs. Use `conda install -c bioconda pybigwig` or `pip install pybigwig` to install it."
         raise ImportError(msg) from None
@@ -532,7 +532,7 @@ def _to_bigbed(
     autosql: str | None = None,
 ) -> None:
     try:
-        import pybigtools  # type: ignore[import]
+        import pybigtools
     except ImportError:
         msg = "pybigtools must be installed to write BigBed files. Use `pip install pybigtools` to install it."
         raise ImportError(msg) from None
@@ -566,5 +566,5 @@ def _to_bigbed(
         sql = autosql
 
     ordered_sizes = {c: sizes[c] for c in sorted(sizes)}
-    writer = pybigtools.open(str(path), "w")  # type: ignore[attr-defined]
+    writer = pybigtools.open(str(path), "w")
     writer.write(ordered_sizes, iter(vals), autosql=sql)

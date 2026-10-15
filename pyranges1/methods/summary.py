@@ -52,6 +52,6 @@ def _summary(
 
     if return_df:
         return summary_lengths
-    str_repr = tabulate(summary_lengths, headers=list(summary_lengths.columns))  # type: ignore[arg-type]
+    str_repr = tabulate(summary_lengths.itertuples(), headers=list(summary_lengths.columns))
     print(str_repr)  # noqa: T201
     return None

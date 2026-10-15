@@ -9,7 +9,7 @@ import pyranges1 as pr
 from pyranges1.core.pyranges_helpers import ensure_pyranges
 
 try:
-    import fire  # type: ignore[reportMissingImports]
+    import fire
 except ImportError:
     fire = None
 

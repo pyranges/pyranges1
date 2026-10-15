@@ -37,7 +37,7 @@ def _local_copy(url: str, storage_options: dict | None) -> Generator[Path]:
                 shutil.copyfileobj(source, copy, 1 << 23)
         else:
             try:
-                import fsspec  # type: ignore[import]
+                import fsspec
             except ImportError:
                 msg = f"Reading {scheme}:// paths requires fsspec: `pip install fsspec` and the package for {scheme}."
                 raise ImportError(msg) from None

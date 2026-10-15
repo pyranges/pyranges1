@@ -36,9 +36,9 @@ def _both_dfs(
     # _self_indexes / _other_indexes are positional (from the overlap engine). Take the
     # matching rows, then temporarily reset both indexes to a RangeIndex so the column-wise
     # join pairs them by position rather than by label.
-    _df = df.take(_self_indexes)  # type: ignore[arg-type]
+    _df = df.take(_self_indexes)
     _df.index = pd.RangeIndex(len(_df))
-    _df2 = pd.DataFrame(df2).take(_other_indexes)  # type: ignore[arg-type]
+    _df2 = pd.DataFrame(df2).take(_other_indexes)
     _df2.index = pd.RangeIndex(len(_df2))
     j = _df.join(_df2, how="inner")
     # Restore the original input index, like overlap()/nearest_ranges()/etc. The primary

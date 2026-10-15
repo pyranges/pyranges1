@@ -17,7 +17,7 @@ def _coverage_ranges(self: "PyRanges", by: list[str], value_col: str | None, cov
     already maximal, so only the uncovered ones are left out.
     """
     try:
-        import runlength as rl  # type: ignore[import-not-found]
+        import runlength as rl
     except ImportError as e:
         msg = "coverage_ranges requires that runlength is installed: pip install runlength"
         raise ImportError(msg) from e

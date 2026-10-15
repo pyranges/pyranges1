@@ -231,7 +231,7 @@ def fisher_exact(tp: Series, fp: Series, fn: Series, tn: Series, pseudocount: in
 
     """
     try:
-        from fisher import pvalue_npy  # type: ignore[import]
+        from fisher import pvalue_npy
     except ImportError:
         msg = (
             "fisher needs to be installed to use fisher exact. pip install fisher or conda install -c bioconda fisher."

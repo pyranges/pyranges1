@@ -308,7 +308,7 @@ chr1	6	7	b	0	-"""
 
         From the epigenomics roadmap.
         """
-        return pr.read_bed(ExampleData.files["aorta.bed"])  # type: ignore[index, misc]
+        return pr.read_bed(ExampleData.files["aorta.bed"])
 
     @property
     def aorta2(self) -> "pr.PyRanges":
@@ -316,7 +316,7 @@ chr1	6	7	b	0	-"""
 
         From the epigenomics roadmap.
         """
-        return pr.read_bed(ExampleData.files["aorta2.bed"])  # type: ignore[index, misc]
+        return pr.read_bed(ExampleData.files["aorta2.bed"])
 
     @property
     def ncbi_gff(self) -> "pr.PyRanges":
@@ -324,7 +324,7 @@ chr1	6	7	b	0	-"""
 
         Subset of the NCBI annotation of D.gyrociliatus assembly GCA_904063045.1.
         """
-        return pr.read_gff3(ExampleData.files["ncbi.gff.gz"])  # type: ignore[index, misc]
+        return pr.read_gff3(ExampleData.files["ncbi.gff.gz"])
 
     @property
     def ncbi_fasta(self) -> "pyfaidx.Fasta":
@@ -336,7 +336,7 @@ chr1	6	7	b	0	-"""
         To retrieve the location of the fasta file, use pyranges.example_data.files['ncbi.fasta']
         """
         try:
-            import pyfaidx  # type: ignore[import]
+            import pyfaidx
         except ImportError:
             LOGGER.exception(
                 "To use this method, pyfaidx must be installed. To get just the fasta file path, use pyranges.example_data.files['ncbi.fasta']. Use `conda install -c bioconda pyfaidx` or `pip install pyfaidx` to install pyfaidx.",
@@ -344,7 +344,7 @@ chr1	6	7	b	0	-"""
             sys.exit(1)
 
         # note: example data include ncbi.fasta.fai, the pyfaidx index
-        return pyfaidx.Fasta(ExampleData.files["ncbi.fasta"])  # type: ignore[index, misc]
+        return pyfaidx.Fasta(ExampleData.files["ncbi.fasta"])
 
 
 example_data = ExampleData()

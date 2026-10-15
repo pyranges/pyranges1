@@ -77,8 +77,8 @@ class RangeFrame(pd.DataFrame):
         # _from_mgr is pandas' own way of doing this (see DataFrame._constructor_from_mgr);
         # pandas-stubs does not declare it, hence the ignores.
         if not self._required_columns.issubset(axes[0]):
-            return pd.DataFrame._from_mgr(mgr, axes=axes)  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
-        return type(self)._from_mgr(mgr, axes=axes)  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
+            return pd.DataFrame._from_mgr(mgr, axes=axes)  # noqa: SLF001  # ty: ignore[unresolved-attribute]
+        return type(self)._from_mgr(mgr, axes=axes)  # noqa: SLF001  # ty: ignore[unresolved-attribute]
 
     def __str__(
         self,
@@ -171,7 +171,7 @@ class RangeFrame(pd.DataFrame):
 
         f1, f2 = factorize_binary(self, other, match_by)
 
-        return ruranges.numpy.count_overlaps(  # type: ignore[attr-defined]
+        return ruranges.numpy.count_overlaps(
             self[START_COL].to_numpy(),
             self[END_COL].to_numpy(),
             other[START_COL].to_numpy(),
@@ -279,14 +279,14 @@ class RangeFrame(pd.DataFrame):
         match_by = arg_to_list(match_by)
 
         factorized = factorize(self, match_by)
-        cluster, idx = ruranges.numpy.cluster(  # type: ignore[attr-defined]
+        cluster, idx = ruranges.numpy.cluster(
             self[START_COL].to_numpy(),
             self[END_COL].to_numpy(),
             factorized,
             slack,
         )
 
-        res = self.take(idx).copy()  # type: ignore[arg-type]
+        res = self.take(idx).copy()
         res.insert(res.shape[1], cluster_column, cluster)
         return _mypy_ensure_rangeframe(res)
 
@@ -470,14 +470,14 @@ class RangeFrame(pd.DataFrame):
 
         factorized = factorize(self, match_by)
 
-        idx = ruranges.numpy.max_disjoint(  # type: ignore[attr-defined]
+        idx = ruranges.numpy.max_disjoint(
             starts=self[START_COL].to_numpy(),
             ends=self[END_COL].to_numpy(),
             groups=factorized,
             slack=slack,
             sort_output=preserve_input_order,
         )
-        return _mypy_ensure_rangeframe(self.take(idx))  # type: ignore[arg-type]
+        return _mypy_ensure_rangeframe(self.take(idx))
 
     def nearest_ranges(
         self,
@@ -566,7 +566,7 @@ class RangeFrame(pd.DataFrame):
         ruranges = require_ruranges()
 
         f1, f2 = factorize_binary(self, other, match_by)
-        idx1, idx2, dist = ruranges.numpy.nearest(  # type: ignore[attr-defined]
+        idx1, idx2, dist = ruranges.numpy.nearest(
             groups=f1,
             starts=self[START_COL].to_numpy(),
             ends=self[END_COL].to_numpy(),
@@ -581,10 +581,10 @@ class RangeFrame(pd.DataFrame):
             sort_output=preserve_input_order,
         )
 
-        left = self.take(idx1)  # type: ignore[arg-type]
+        left = self.take(idx1)
         to_concat: list[pd.DataFrame | pd.Series] = [
             left.reset_index(drop=True),
-            pd.DataFrame(other).take(idx2).add_suffix(suffix).reset_index(drop=True),  # type: ignore[arg-type]
+            pd.DataFrame(other).take(idx2).add_suffix(suffix).reset_index(drop=True),
         ]
         if dist_col is not None:
             to_concat.append(pd.Series(dist, name=dist_col))
@@ -726,7 +726,7 @@ class RangeFrame(pd.DataFrame):
             sort_descending=arg_to_list(sort_descending),
         )
         idxs = sort_order(self, keys, descending, use_natsort=False)
-        return _mypy_ensure_rangeframe(self.take(idxs))  # type: ignore[arg-type]
+        return _mypy_ensure_rangeframe(self.take(idxs))
 
     def subtract_overlaps(
         self: "RangeFrame",
@@ -775,7 +775,7 @@ class RangeFrame(pd.DataFrame):
 
         f1, f2 = factorize_binary(self, other, match_by)
 
-        idx, start, end = ruranges.numpy.subtract(  # type: ignore[attr-defined]
+        idx, start, end = ruranges.numpy.subtract(
             self[START_COL].to_numpy(),
             self[END_COL].to_numpy(),
             other[START_COL].to_numpy(),
@@ -785,7 +785,7 @@ class RangeFrame(pd.DataFrame):
             sort_output=preserve_input_order,
         )
 
-        output = self.take(idx).copy()  # type: ignore[arg-type]
+        output = self.take(idx).copy()
         output[START_COL], output[END_COL] = start, end
         return _mypy_ensure_rangeframe(output)
 
@@ -871,7 +871,7 @@ class RangeFrame(pd.DataFrame):
             raise ValueError(msg)
         return self
 
-    def copy(self, *args, **kwargs) -> "RangeFrame":  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D102
+    def copy(self, *args, **kwargs) -> "RangeFrame":  # noqa: D102  # ty: ignore[override-of-final-method]
         # a copy keeps every column, so pandas hands this straight back as our own class
         return self._rebuild_as_self(super().copy(*args, **kwargs))
 
@@ -898,14 +898,14 @@ class RangeFrame(pd.DataFrame):
             return result
         return self._constructor_with_fallback(result)
 
-    def drop(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame | None":  # type: ignore[override]  # noqa: D102
+    def drop(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame | None":  # noqa: D102  # ty: ignore[invalid-method-override]
         return self._rebuild_as_self(super().drop(*args, **kwargs))
 
     def drop_and_return(self, *args: Any, **kwargs: Any) -> "RangeFrame | pd.DataFrame":  # noqa: D102
         kwargs["inplace"] = False
         return self._rebuild_as_self(super().drop(*args, **kwargs))
 
-    def reindex(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame":  # noqa: D102
+    def reindex(self, *args, **kwargs) -> "RangeFrame | pd.DataFrame":  # noqa: D102  # ty: ignore[invalid-method-override]
         return self._rebuild_as_self(super().reindex(*args, **kwargs))
 
 
@@ -920,8 +920,8 @@ def _mypy_ensure_rangeframe(r: pd.DataFrame) -> "RangeFrame":
 def assert_valid_ranges(function: Callable, *args: "RangeFrame") -> None:
     """Raise ValueError because function is called on invalid ranges."""
     if any(r.reasons_why_frame_is_invalid() for r in args):
-        is_not_lambda = function.__name__ != "<lambda>"
-        function_repr = function.__name__ if is_not_lambda else inspect.getsource(function).strip()
+        name = getattr(function, "__name__", "<lambda>")
+        function_repr = name if name != "<lambda>" else inspect.getsource(function).strip()
         msg = f"Cannot perform function on invalid ranges (function was {function_repr})."
         raise ValueError(msg)
 

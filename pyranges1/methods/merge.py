@@ -33,7 +33,7 @@ def _merge(
         slack=slack or 0,
     )
 
-    by_subset = df[col_order].take(indices)  # type: ignore[arg-type]
+    by_subset = df[col_order].take(indices)
     by_subset.loc[:, START_COL] = start
     by_subset.loc[:, END_COL] = end
 

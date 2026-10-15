@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import gtfreader
 import numpy as np
 import pandas as pd
-from natsort import natsorted  # type: ignore[import]
+from natsort import natsorted
 
 from pyranges1.core.options import option_manager
 from pyranges1.core.pyranges_helpers import ensure_pyranges
@@ -131,7 +131,7 @@ def from_string(s: str) -> "PyRanges":
 def _read_bed_region(path: "str | Path", region: str, columns: list[str]) -> "PyRanges":
     """Read the records of a tabix-indexed BED file that overlap `region`."""
     try:
-        import pysam  # type: ignore[import]
+        import pysam
     except ImportError:
         msg = "pysam must be installed to read a region of a BED file. Use `pip install pysam`."
         raise ImportError(msg) from None
@@ -593,7 +593,7 @@ def read_bam(
         return _read_pysam_alignment(f, "rb", mapq, required_flag, filter_flag, None, sparse=sparse, region=region)
     path = Path(f)
     try:
-        import bamread  # type: ignore[import]
+        import bamread
     except ImportError:
         msg = "bamread must be installed to read bam. Use `conda install -c bioconda bamread` or `pip install bamread` to install it."
         raise ImportError(msg) from None
@@ -1093,7 +1093,7 @@ def read_bigwig(f: str | Path, *, region: str | None = None) -> "PyRanges":
 
     """
     try:
-        import pyBigWig  # type: ignore[import]
+        import pyBigWig
     except ModuleNotFoundError:
         msg = "pyBigWig must be installed to read bigwigs. Use `pip install pyBigWig` to install it."
         raise ImportError(msg) from None
@@ -1216,7 +1216,7 @@ def _read_pysam_alignment(
     Unmapped reads are always skipped.
     """
     try:
-        import pysam  # type: ignore[import]
+        import pysam
     except ImportError:
         msg = (
             "pysam must be installed to read SAM/CRAM files. "
@@ -1447,7 +1447,7 @@ def read_bigbed(f: "str | Path", *, region: str | None = None) -> "PyRanges":
 
     """
     try:
-        import pyBigWig  # type: ignore[import]
+        import pyBigWig
     except ModuleNotFoundError:
         msg = "pyBigWig must be installed to read BigBed files. Use `pip install pyBigWig` to install it."
         raise ImportError(msg) from None
@@ -2185,7 +2185,7 @@ def read_vcf(
 
     """
     try:
-        import pysam  # type: ignore[import]
+        import pysam
     except ImportError:
         msg = (
             "pysam must be installed to read VCF/BCF files. "

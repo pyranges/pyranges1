@@ -357,7 +357,7 @@ def extend_orfs(  # noqa: C901,PLR0912,PLR0915
 
     """
     try:
-        import pyfaidx  # type: ignore[import]
+        import pyfaidx
     except ImportError:
         msg = "To use extend_orfs, pyfaidx must be installed. Use `conda install -c bioconda pyfaidx` or `pip install pyfaidx` to install pyfaidx."
         raise ImportError(msg) from None
