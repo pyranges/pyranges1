@@ -1,10 +1,12 @@
 # below: Class to manage PyRanges options
 # purposedly not using a docstring to avoid it being included in the docs
 
+from typing import Any
+
 
 class PyRangesOptions:
     def __init__(self) -> None:
-        self.options_in_use = {
+        self.options_in_use: dict[str, tuple[Any, str]] = {
             "max_rows_to_show": (8, "the max number of rows to show in PyRanges repr"),
             "max_column_names_to_show": (
                 3,

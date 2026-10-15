@@ -35,19 +35,19 @@ def _spliced_subseq(
     chrs = factorize(df, by) if by else np.arange(len(df), dtype=np.uint32)
 
     outidx, outstarts, outends = ruranges.numpy.spliced_subsequence(
-        groups=chrs,  # type: ignore[arg-type]
+        groups=chrs,
         starts=df[START_COL].to_numpy(),
         ends=df[END_COL].to_numpy(),
         strand_flags=(df[STRAND_COL] == FORWARD_STRAND).to_numpy()
         if (STRAND_COL in df and not force_plus_strand)
         else np.ones(len(df), dtype=bool),
-        start=start,  # type: ignore[type]
-        end=end,  # type: ignore[type]
+        start=start,
+        end=end,
         force_plus_strand=force_plus_strand,
         sort_output=preserve_input_order,
     )
 
-    outdf = df.take(outidx)  # type: ignore[arg-type]
+    outdf = df.take(outidx)
     outdf.loc[:, START_COL] = outstarts
     outdf.loc[:, END_COL] = outends
 
@@ -72,7 +72,7 @@ def _subseq(
 
     chrs = factorize(df, by)
 
-    outidx, outstarts, outends = ruranges.numpy.subsequence_numpy(  # type: ignore[attr-defined]
+    outidx, outstarts, outends = ruranges.numpy.subsequence_numpy(
         chrs,
         df[START_COL].to_numpy(),
         df[END_COL].to_numpy(),

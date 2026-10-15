@@ -48,7 +48,7 @@ def _map_to_global_pandas(
         suffixes=("_local", ""),
     )
 
-    z = m.slice_ranges(  # type: ignore[reportCallIssue]
+    z = m.slice_ranges(
         group_by="_temp_index_",
         start=m[out_local_start].to_numpy(),
         end=m[out_local_end].to_numpy(),
@@ -174,7 +174,7 @@ def _map_to_global_ruranges(
     out_chr_code = tx2chr_code[q_tx_code[keep_idx]]
     out_chr_str = chr_table[out_chr_code]
 
-    mapped_df = local_gr.take(keep_idx).copy()  # type: ignore[arg-type]
+    mapped_df = local_gr.take(keep_idx).copy()
 
     if keep_id:
         mapped_df[global_on] = mapped_df[CHROM_COL].copy()

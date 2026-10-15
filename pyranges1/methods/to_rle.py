@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from pyranges1 import PyRanges
 
     with contextlib.suppress(ImportError):
-        from runlength import RleBatch  # type: ignore[import-not-found]
+        from runlength import RleBatch
 
 
 def _to_rle(
@@ -19,7 +19,7 @@ def _to_rle(
     rpm: bool = False,
 ) -> "RleBatch":
     try:
-        import runlength as rl  # type: ignore[import-not-found]
+        import runlength as rl
     except ImportError as e:
         msg = "Using the coverage method requires that runlength is installed: pip install runlength"
         raise ImportError(msg) from e

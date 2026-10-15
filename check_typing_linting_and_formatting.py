@@ -30,7 +30,7 @@ def main() -> int:
     commands = {
         "ruff format": ["ruff", "format", "--check", "--diff", "pyranges1"],
         "ruff check": ["ruff", "check", "pyranges1"],
-        "pyright": ["pyright", "pyranges1"],
+        "ty": ["ty", "check"],
         "pytest": ["pytest", "--doctest-modules", "pyranges1/", "tests/unit/"],
         # "more doctest": ["python", "tests/run_doctest_tutorial_howto.py"],
     }

@@ -24,14 +24,14 @@ def _complement_overlaps(
     factorized, factorized2 = factorize_binary(df, df2, by)
 
     indices = ruranges.numpy.complement_overlaps(
-        groups=factorized,  # type: ignore[arg-type]
+        groups=factorized,
         starts=df.Start.to_numpy(),
         ends=df.End.to_numpy(),
-        groups2=factorized2,  # type: ignore[arg-type]
+        groups2=factorized2,
         starts2=df2.Start.to_numpy(),
         ends2=df2.End.to_numpy(),
         slack=slack or 0,
         sort_output=preserve_input_order,
     )
 
-    return ensure_rangeframe(df.take(indices))  # type: ignore[arg-type]
+    return ensure_rangeframe(df.take(indices))

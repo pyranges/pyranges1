@@ -69,7 +69,7 @@ def _overlap(
         slack=slack,
         preserve_input_order=preserve_input_order,
     )
-    return df.take(idx1)  # type: ignore[]
+    return df.take(idx1)
 
 
 def _intersect(
@@ -92,7 +92,7 @@ def _intersect(
         preserve_input_order=preserve_input_order,
     )
 
-    rf, rf2 = df.take(idx1), df2.take(idx2).loc[:, RANGE_COLS]  # type: ignore[arg-type]
+    rf, rf2 = df.take(idx1), df2.take(idx2).loc[:, RANGE_COLS]
 
     new_starts = np.where(rf.Start.to_numpy() > rf2.Start.to_numpy(), rf.Start, rf2.Start)
 

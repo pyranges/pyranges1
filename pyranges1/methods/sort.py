@@ -112,11 +112,7 @@ def _column_ranks(values: pd.Series, *, use_natsort: bool, descending: bool) -> 
 
         ruranges = require_ruranges()
         as_text = [str(value) for value in uniques]
-        rank = (
-            ruranges.numpy.natural_rank(as_text)  # type: ignore[attr-defined]
-            if use_natsort
-            else ruranges.numpy.lexical_rank(as_text)  # type: ignore[attr-defined]
-        )
+        rank = ruranges.numpy.natural_rank(as_text) if use_natsort else ruranges.numpy.lexical_rank(as_text)
 
     if descending:
         rank = (len(uniques) - 1 - rank).astype(np.uint32)
@@ -151,7 +147,7 @@ def group_ids(df: pd.DataFrame, keys: list[str], descending: list[bool], *, use_
     cardinality = 1
     for name, reverse in zip(keys, descending, strict=True):
         codes, count = _column_ranks(df[name], use_natsort=use_natsort, descending=reverse)
-        group, cardinality = ruranges.numpy.fold_ranks(group, cardinality, codes, count)  # type: ignore[attr-defined]
+        group, cardinality = ruranges.numpy.fold_ranks(group, cardinality, codes, count)
     return group
 
 
@@ -222,7 +218,7 @@ def sort_order(
             values.insert(0, np.zeros(len(df), dtype=np.int64))
         starts, ends = values
 
-    return ruranges.numpy.sort_intervals(  # type: ignore[attr-defined]
+    return ruranges.numpy.sort_intervals(
         starts,
         ends,
         groups=group,

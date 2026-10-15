@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 import numpy as np
 import pandas as pd
-from natsort import natsorted  # type: ignore[import]
+from natsort import natsorted
 
 import pyranges1 as pr
 from pyranges1.core.loci_getter import LociGetter
@@ -68,8 +68,8 @@ from pyranges1.range_frame.range_frame import RangeFrame
 from pyranges1.range_frame.range_frame_validator import InvalidRangesReason
 
 if TYPE_CHECKING:
-    import pyfaidx  # type: ignore[import]
-    from runlength import RleBatch  # type: ignore[import-not-found]
+    import pyfaidx
+    from runlength import RleBatch
 
 
 __all__ = ["PyRanges"]
@@ -177,7 +177,7 @@ class PyRanges(RangeFrame):
     # ever calling __init__, so this cannot be set there alone.
     _loci: "LociGetter | None" = None
 
-    def __new__(cls, *args, **kwargs) -> "pr.PyRanges":  # type: ignore[misc]
+    def __new__(cls, *args, **kwargs) -> "pr.PyRanges":
         """Create a new instance of a PyRanges object."""
         # __new__ is a special static method used for creating and
         # returning a new instance of a class. It is called before
@@ -239,7 +239,7 @@ class PyRanges(RangeFrame):
         return cls(df)
 
     @classmethod
-    def from_arrow(cls, data: Any) -> "PyRanges":  # type: ignore[override]
+    def from_arrow(cls, data: Any) -> "PyRanges":
         """Create a PyRanges from an Arrow table, or anything that exports one (polars, DuckDB, ...).
 
         As pandas.DataFrame.from_arrow, but the result is a PyRanges. Like the constructor,
@@ -255,7 +255,7 @@ class PyRanges(RangeFrame):
 
         """
         if hasattr(pd.DataFrame, "from_arrow"):  # pandas >= 3
-            return cls(pd.DataFrame.from_arrow(data))  # type: ignore[attr-defined]
+            return cls(pd.DataFrame.from_arrow(data))
         import pyarrow as pa
 
         return cls(pa.table(data).to_pandas())
@@ -811,7 +811,7 @@ class PyRanges(RangeFrame):
 
         return ensure_pyranges(result)
 
-    def copy(self, *args, **kwargs) -> "pr.PyRanges":
+    def copy(self, *args, **kwargs) -> "pr.PyRanges":  # ty: ignore[override-of-final-method]
         """Return a copy of the PyRanges."""
         # a copy keeps every column, so pandas hands this straight back as our own class
         return self._rebuild_as_self(super().copy(*args, **kwargs))
@@ -898,7 +898,7 @@ class PyRanges(RangeFrame):
         by = prepare_by_single(self, use_strand=use_strand, match_by=match_by)
         return _coverage_ranges(self, by, value_col, coverage_col)
 
-    def count_overlaps(  # type: ignore[override]
+    def count_overlaps(  # ty: ignore[invalid-method-override]
         self,
         other: "PyRanges",
         strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto",
@@ -1239,7 +1239,7 @@ class PyRanges(RangeFrame):
         groups = factorize(self, group_by) if group_by is not None else np.arange(len(self), dtype=np.uint32)
 
         starts, ends = ruranges.numpy.extend(
-            groups=groups,  # type: ignore[arg-type]
+            groups=groups,
             starts=self[START_COL].to_numpy(),
             ends=self[END_COL].to_numpy(),
             negative_strand=(
@@ -1434,7 +1434,7 @@ class PyRanges(RangeFrame):
         """
         return STRAND_COL in self.columns
 
-    def join_overlaps(  # type: ignore[override]
+    def join_overlaps(  # ty: ignore[invalid-method-override]
         self,
         other: "PyRanges",
         *,
@@ -2469,7 +2469,7 @@ class PyRanges(RangeFrame):
 
         return ensure_pyranges(result)
 
-    def nearest_ranges(  # type: ignore[override]
+    def nearest_ranges(  # ty: ignore[invalid-method-override]
         self,
         other: "PyRanges",
         strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto",
@@ -2797,7 +2797,7 @@ class PyRanges(RangeFrame):
             del combined[TEMP_INDEX_COL]
         return ensure_pyranges(combined)
 
-    def overlap(  # type: ignore[override]
+    def overlap(  # ty: ignore[invalid-method-override]
         self,
         other: "PyRanges",
         strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto",
@@ -3245,7 +3245,7 @@ class PyRanges(RangeFrame):
 
         return gr.merge_overlaps(use_strand=use_strand, match_by=match_by)
 
-    def sort_ranges(  # type: ignore[override]
+    def sort_ranges(
         self,
         by: VALID_BY_TYPES = None,
         *,
@@ -3434,7 +3434,7 @@ class PyRanges(RangeFrame):
             use_natsort=natsort,
             reverse_rows=None if not use_strand else (self[STRAND_COL] == "-").to_numpy(dtype=bool),
         )
-        res = self.take(idxs)  # type: ignore[arg-type]
+        res = self.take(idxs)
 
         return ensure_pyranges(res)
 
@@ -3846,7 +3846,7 @@ class PyRanges(RangeFrame):
             between=between,
         )
 
-        res = ensure_pyranges(self.take(idxs).reset_index(drop=True))  # type: ignore[arg-type]
+        res = ensure_pyranges(self.take(idxs).reset_index(drop=True))
         if between:
             # A gap row descends from no input row, so it carries no metadata; and if
             # Strand was not a grouping key the gap spans both strands, so no strand
@@ -3965,7 +3965,7 @@ class PyRanges(RangeFrame):
 
         return ensure_pyranges(result)
 
-    def subtract_overlaps(  # type: ignore[override]
+    def subtract_overlaps(  # ty: ignore[invalid-method-override]
         self,
         other: "pr.PyRanges",
         strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto",
@@ -4275,14 +4275,14 @@ class PyRanges(RangeFrame):
         factorize_arange(self, match_by)
 
         negative_strand = (self[STRAND_COL] == "-").to_numpy() if use_strand else np.zeros(len(self), dtype=bool)
-        indices, starts, ends, overlap_fraction = ruranges.numpy.tile(  # type: ignore[attr-defined]
+        indices, starts, ends, overlap_fraction = ruranges.numpy.tile(
             starts=self[START_COL].to_numpy(),
             ends=self[END_COL].to_numpy(),
             negative_strand=negative_strand,
             tile_size=tile_size,
         )
 
-        res = self.take(indices)  # type: ignore[arg-type]
+        res = self.take(indices)
         res.loc[:, START_COL] = starts
         res.loc[:, END_COL] = ends
         if overlap_column:
@@ -4445,7 +4445,7 @@ class PyRanges(RangeFrame):
 
         return _to_bed(self, path, keep=keep, compression=compression, tabix=tabix)
 
-    def to_parquet(self, path: str | None = None, *, index: bool = False, **kwargs) -> bytes | None:  # type: ignore[override]
+    def to_parquet(self, path: str | None = None, *, index: bool = False, **kwargs) -> bytes | None:  # ty: ignore[invalid-method-override]
         r"""Write to Parquet.
 
         Parquet preserves column dtypes (categoricals included) and reads back
@@ -5923,14 +5923,14 @@ class PyRanges(RangeFrame):
         group_ids = factorize_arange(gr, group_by)
         negative_strand = (gr[STRAND_COL] == "-").to_numpy() if use_strand else np.zeros(len(gr), dtype=bool)
 
-        idx, starts, ends = ruranges.numpy.window(  # type: ignore[attr-defined]
+        idx, starts, ends = ruranges.numpy.window(
             groups=group_ids,
             starts=gr[START_COL].to_numpy(),
             ends=gr[END_COL].to_numpy(),
             negative_strand=negative_strand,
             window_size=window_size,
         )
-        df = gr.take(idx)  # type: ignore[arg-type]
+        df = gr.take(idx)
         df.loc[:, START_COL] = starts
         df.loc[:, END_COL] = ends
         df = ensure_pyranges(df)
@@ -6152,7 +6152,7 @@ class PyRanges(RangeFrame):
 
         forward = (self[STRAND_COL] == FORWARD_STRAND).to_numpy() if strand else np.ones(self.shape[0], dtype=np.bool_)
 
-        idx, cumsum_start, cumsum_end = ruranges.numpy.group_cumsum(  # type: ignore[attr-defined]
+        idx, cumsum_start, cumsum_end = ruranges.numpy.group_cumsum(
             starts=self[START_COL].to_numpy(),
             ends=self[END_COL].to_numpy(),
             groups=group_ids,
@@ -6160,7 +6160,7 @@ class PyRanges(RangeFrame):
             sort=keep_order,
         )
 
-        res = self.take(idx).copy()  # type: ignore[arg-type]
+        res = self.take(idx).copy()
         if cumsum_start_column is None:
             res.loc[:, START_COL] = cumsum_start
             res.loc[:, END_COL] = cumsum_end
@@ -6170,7 +6170,7 @@ class PyRanges(RangeFrame):
 
         return ensure_pyranges(res)
 
-    def intersect_overlaps(  # type: ignore[override]
+    def intersect_overlaps(
         self,
         other: "PyRanges",
         strand_behavior: VALID_STRAND_BEHAVIOR_TYPE = "auto",
@@ -6987,7 +6987,7 @@ class PyRanges(RangeFrame):
 
         """
         try:
-            import pyfaidx  # type: ignore[import]
+            import pyfaidx
         except ImportError:
             LOGGER.exception(
                 "pyfaidx must be installed to get fasta sequences. Use `conda install -c bioconda pyfaidx` or `pip install pyfaidx` to install it.",
@@ -7234,7 +7234,7 @@ class PyRanges(RangeFrame):
         chrom_lengths_vec = lengths_per_code[codes]
 
         idxs, starts, ends = ruranges.numpy.genome_bounds(
-            groups=codes,  # type: ignore[arg-type]
+            groups=codes,
             starts=self[START_COL].to_numpy(),
             ends=self[END_COL].to_numpy(),
             chrom_length=chrom_lengths_vec,  # **row-aligned!**
@@ -7242,7 +7242,7 @@ class PyRanges(RangeFrame):
             only_right=only_right,
         )
 
-        res = self.take(idxs)  # type: ignore[arg-type]
+        res = self.take(idxs)
         if not remove:
             res.loc[:, START_COL] = starts
             res.loc[:, END_COL] = ends

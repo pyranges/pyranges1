@@ -28,13 +28,9 @@ def _entries(bw: Any, chromosome: str, starts: np.ndarray, ends: np.ndarray, siz
     block_starts = starts[new_block]
     block_ends = np.maximum.reduceat(ends, np.flatnonzero(new_block)) if len(ends) else ends
     if len(block_starts) > MAX_REGION_READS:
-        intervals = bw.intervals(chromosome)  # type: ignore[attr-defined]
+        intervals = bw.intervals(chromosome)
         return np.array(intervals or [], dtype=float).reshape(-1, 3)
-    parts = [
-        bw.intervals(chromosome, int(s), int(e))  # type: ignore[attr-defined]
-        for s, e in zip(block_starts, block_ends, strict=True)
-        if e > s
-    ]
+    parts = [bw.intervals(chromosome, int(s), int(e)) for s, e in zip(block_starts, block_ends, strict=True) if e > s]
     entries = np.array([entry for part in parts if part for entry in part], dtype=float).reshape(-1, 3)
     # An entry that crosses from one stretch into the next is read with both.
     _, first = np.unique(entries[:, 0], return_index=True)
@@ -50,8 +46,8 @@ def _read_track(
 ) -> tuple[Any, dict[str, int]]:
     """Read the signal under the intervals into one Rle per chromosome, null where the bigWig has no data."""
     import pyarrow as pa
-    import pyBigWig  # type: ignore[import]
-    import runlength as rl  # type: ignore[import-not-found]
+    import pyBigWig
+    import runlength as rl
 
     bw = pyBigWig.open(str(path))
     sizes = bw.chroms()
@@ -78,7 +74,7 @@ def _slice_agg(signal: Any, bins: tuple[object, np.ndarray, np.ndarray], agg: st
     """Compute one statistic over every bin, as floats with NaN for null."""
     import pyarrow as pa
 
-    result = signal.slice_agg(*bins, agg)  # type: ignore[attr-defined]
+    result = signal.slice_agg(*bins, agg)
     return pa.array(result).to_numpy(zero_copy_only=False).astype(float)
 
 
@@ -93,13 +89,13 @@ def _bigwig_stats(
     prefix: str,
 ) -> "PyRanges":
     try:
-        import pyBigWig  # type: ignore[import]  # noqa: F401
+        import pyBigWig  # noqa: F401
     except ImportError:
         msg = "pyBigWig must be installed to read bigwigs. Use `pip install pyBigWig` to install it."
         raise ImportError(msg) from None
     try:
         import pyarrow as pa
-        import runlength  # type: ignore[import-not-found]  # noqa: F401
+        import runlength  # noqa: F401
     except ImportError:
         msg = "bigwig_stats requires runlength and pyarrow: pip install runlength pyarrow"
         raise ImportError(msg) from None
