@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyranges1"
-version = "1.5.0"
+version = "1.5.1"
 description = "GenomicRanges for Python."
 requires-python = ">=3.12.0"
 readme = "README.md"
@@ -30,7 +30,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 keywords = ["bioinformatics", "genomicranges", "genomics"]
-dependencies = ["pandas", "tabulate", "natsort", "ruranges>=0.1.8", "gtfreader>=0.3.0"]
+dependencies = ["pandas", "tabulate", "natsort", "ruranges>=0.2.8", "gtfreader>=0.3.1"]
 
 [project.optional-dependencies]
 # pyarrow parses on every core instead of one: read_bed is 10-18x faster on
@@ -131,8 +131,8 @@ deps =
     pytest
     ty == 0.0.87
     joblib
-    gtfreader >= 0.3.0
-    ruranges >= 0.1.8
+    gtfreader >= 0.3.1
+    ruranges >= 0.2.8
     # The readers run every test twice, once on each parser. Without pyarrow
     # here the fast half silently skips, which is how a broken fast path ships.
     pyarrow
