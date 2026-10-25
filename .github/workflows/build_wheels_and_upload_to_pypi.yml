@@ -1,8 +1,5 @@
 name: Build and upload to PyPI
 
-env:
-  CIBW_SKIP: "cp36-*"
-
 on:
   workflow_dispatch:
 
