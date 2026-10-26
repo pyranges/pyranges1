@@ -46,7 +46,7 @@ def _read_bedgraph(f: "str | Path", nrows: int | None) -> "PyRanges":
             nrows=nrows,
             skiprows=skip,
             compression="gzip" if compressed else "infer",
-            dtype={CHROM_COL: "category"},
+            dtype={CHROM_COL: str},
         )
     df[VALUE_COL] = df[VALUE_COL].astype("float64")
     _as_sorted_categorical(df, (CHROM_COL,))

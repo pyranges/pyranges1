@@ -30,7 +30,7 @@ A single PyRanges column (which are pandas Series) can be extracted through the 
   PyRanges with 20 rows, 6 columns, and 1 index columns.
   Contains 15 chromosomes and 2 strands.
 
-  >>> gr.Chromosome.head()
+  >>> gr.Chromosome.head()  # doctest: +NORMALIZE_WHITESPACE
   0     chr8
   1     chr7
   2     chr5
@@ -51,7 +51,7 @@ A single PyRanges column (which are pandas Series) can be extracted through the 
 
 The ``gr[column_name]`` syntax also extracts a column from a PyRanges object:
 
-  >>> gr['Chromosome'].head()
+  >>> gr['Chromosome'].head()  # doctest: +NORMALIZE_WHITESPACE
   0     chr8
   1     chr7
   2     chr5

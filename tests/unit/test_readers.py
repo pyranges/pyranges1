@@ -441,16 +441,22 @@ def test_read_gtf_dtype_contract(mode):
 
 @pytest.fixture
 def no_pyarrow_import(monkeypatch):
-    """Make `import pyarrow` fail, as it does when pyarrow is not installed."""
+    """Make pyranges1's `import pyarrow` fail, as it does when pyarrow is not installed.
+
+    Only pyranges1's own imports are blocked: pandas >= 3.1 decides once, at
+    import time, that pyarrow is available and then imports it inside read_csv,
+    which a global block would break although no real install could get there.
+    """
     import builtins
 
     real_import = builtins.__import__
 
-    def fake_import(name, *args, **kwargs):
-        if name.startswith("pyarrow"):
+    def fake_import(name, globals=None, *args, **kwargs):  # noqa: A002
+        caller = (globals or {}).get("__name__", "")
+        if name.startswith("pyarrow") and caller.startswith("pyranges1"):
             msg = "No module named 'pyarrow'"
             raise ImportError(msg)
-        return real_import(name, *args, **kwargs)
+        return real_import(name, globals, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 

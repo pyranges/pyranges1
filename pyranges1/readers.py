@@ -268,7 +268,7 @@ def read_bed(
     if df is None:
         df = pd.read_csv(
             path,
-            dtype={"Chromosome": "category", "Strand": "category"},
+            dtype={"Chromosome": str, "Strand": str},
             nrows=nrows,
             header=header,
             names=names,
@@ -919,7 +919,9 @@ def read_gff3(
             return read_gff3(local, nrows=nrows)
     path = Path(f)
 
-    dtypes: Mapping = {"Chromosome": "category", "Feature": "category", "Strand": "category"}
+    # Read as str and categorise after: since pandas 3.1, read_csv infers the
+    # categories of a "category" column, so chromosome 1 would become the int 1.
+    dtypes: Mapping = {"Chromosome": str, "Feature": str, "Strand": str}
 
     names = ["Chromosome", "Source", "Feature", "Start", "End", "Score", "Strand", "Frame", "Attribute"]
     chunksize = int(1e5)
@@ -1942,8 +1944,9 @@ def _read_peaks(
         skiprows=skip,
         comment="#",
         compression="gzip" if compressed else "infer",
-        dtype={"Chromosome": "category", "Strand": "category"},
+        dtype={"Chromosome": str, "Strand": str},
     )
+    _as_sorted_categorical(df, ("Chromosome", "Strand"))
     return ensure_pyranges(df)
 
 
