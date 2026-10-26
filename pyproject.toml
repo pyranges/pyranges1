@@ -108,7 +108,9 @@ python =
     3.12 = py312
     3.13 = py313
 
+# Allow CI to supply wheels built from companion backend PRs.
 [testenv]
+passenv = PIP_FIND_LINKS
 basepython =
     py312: python3.12
     py313: python3.13
