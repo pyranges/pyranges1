@@ -224,10 +224,10 @@ def fisher_exact(tp: Series, fp: Series, fn: Series, tn: Series, pseudocount: in
     0  12   5  29   2
     1   0  12  10   2
 
-    >>> pr.stats.fisher_exact(df.TP, df.FP, df.TN, df.FN) # doctest: +SKIP
-       odds_ratio         P     PLeft    PRight
-    0    0.165517  0.080269  0.044555  0.994525
-    1    0.000000  0.000067  0.000034  1.000000
+    >>> pr.stats.fisher_exact(df.TP, df.FP, df.FN, df.TN) # doctest: +SKIP
+       odds_ratio         P    PLeft    PRight
+    0        34.8  0.000006  1.00000  0.000006
+    1         0.0  0.478261  0.23913  1.000000
 
     """
     try:
