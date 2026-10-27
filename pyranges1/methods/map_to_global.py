@@ -185,7 +185,7 @@ def _map_to_global_ruranges(
     schema = local_gr.head(0).merge(reference.head(0), left_on=local_on, right_on=global_on, suffixes=("_local", ""))
     mapped_df = local_gr.take(keep_idx).copy()
     if keep_id:
-        mapped_df[global_on] = pd.array(ex_df[global_on].iloc[exon_idx], dtype=schema[global_on].dtype)
+        mapped_df[global_on] = ex_df[global_on].iloc[exon_idx].astype(schema[global_on].dtype).array
     elif local_on == global_on and local_on != CHROM_COL:
         mapped_df[local_on] = mapped_df[local_on].astype(schema[local_on].dtype)
     if keep_loc:
@@ -193,9 +193,9 @@ def _map_to_global_ruranges(
         mapped_df[out_local_end] = mapped_df[END_COL].array.copy()
         if local_has_strand and global_has_strand:
             mapped_df[out_local_strand] = mapped_df[STRAND_COL].array.copy()
-    mapped_df[CHROM_COL] = pd.array(ex_df[CHROM_COL].iloc[exon_idx], dtype=schema[CHROM_COL].dtype)
-    mapped_df[START_COL] = pd.array(out_start, dtype=global_gr[START_COL].dtype)
-    mapped_df[END_COL] = pd.array(out_end, dtype=global_gr[END_COL].dtype)
+    mapped_df[CHROM_COL] = ex_df[CHROM_COL].iloc[exon_idx].astype(schema[CHROM_COL].dtype).array
+    mapped_df[START_COL] = pd.Series(out_start).astype(global_gr[START_COL].dtype).array
+    mapped_df[END_COL] = pd.Series(out_end).astype(global_gr[END_COL].dtype).array
     if local_has_strand and global_has_strand:
         mapped_df[STRAND_COL] = np.where(out_strand, "+", "-")
     elif global_has_strand:
