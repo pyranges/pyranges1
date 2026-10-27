@@ -1,4 +1,5 @@
 # 1.5.2 (27.10.26)
+- Project transcript queries through Rust, retaining original query/exon order, indices, strand composition and optional metadata. Negative offsets retain their transcript-end interpretation. References whose ids span multiple chromosomes or strands retain the pandas path. Requires ruranges >= 0.2.9.
 - Fix the `stats.fisher_exact` docstring example, which passed TN and FN in each other's slots and showed the odds ratio and p-values for the wrong table. Found and fixed by Mohit Arvind Khakharia (@Mohit-Ak) in pyranges/pyranges0#411
 
 # 1.5.1 (25.10.26)
