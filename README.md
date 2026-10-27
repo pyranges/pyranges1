@@ -22,6 +22,15 @@ available at https://pyranges1.readthedocs.io/
 ## Recent Changelog
 
 ```
+# 1.5.2 (27.10.26)
+- Project transcript queries through Rust, retaining original query/exon order, indices, strand composition and optional metadata. Negative offsets retain their transcript-end interpretation. References whose ids span multiple chromosomes or strands retain the pandas path. Requires ruranges >= 0.2.9.
+- Fix the `stats.fisher_exact` docstring example, which passed TN and FN in each other's slots and showed the odds ratio and p-values for the wrong table. Found and fixed by Mohit Arvind Khakharia (@Mohit-Ak) in pyranges/pyranges0#411
+
+# 1.5.1 (25.10.26)
+- Fix the readers under pandas 3.1, which infers the categories of a `"category"` column in `read_csv`: a chromosome named `1` came back as the integer `1` (and `01` merged with it). BED, GFF3, peak and signal files are now read as text and made categorical after; GTF needs gtfreader >= 0.3.1
+- Fix `ValueError`/`TypeError: The given array is not contiguous` from most range operations on frames whose columns are strided views (pandas >= 3.1 can return them; coordinates past int32 always reached the kernels uncopied); requires ruranges >= 0.2.8
+- Doctests and the unit tests pass on pandas 3.1
+
 # 1.5.0 (14.10.26)
 Most of this release is by Piotr Balwierz (@balwierz), and the parallel readers by Marco Mariotti (@marco-mariotti).
 
