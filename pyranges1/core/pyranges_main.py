@@ -61,7 +61,7 @@ from pyranges1.core.pyranges_helpers import (
 from pyranges1.core.tostring import tostring
 from pyranges1.methods.complement import _complement
 from pyranges1.methods.interval_metrics import compute_interval_metrics
-from pyranges1.methods.map_to_global import _map_to_global_pandas
+from pyranges1.methods.map_to_global import _map_to_global_ruranges
 from pyranges1.methods.map_to_local import _map_to_local
 from pyranges1.methods.sort import resolve_sort_keys, sort_order
 from pyranges1.range_frame.range_frame import RangeFrame
@@ -2007,7 +2007,7 @@ class PyRanges(RangeFrame):
         else:
             local = self
 
-        return _map_to_global_pandas(
+        return _map_to_global_ruranges(
             local_gr=local, global_gr=gr, global_on=global_on, local_on=local_on, keep_id=keep_id, keep_loc=keep_loc
         )
 

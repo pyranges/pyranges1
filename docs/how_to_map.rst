@@ -481,3 +481,13 @@ With the similar logic, we can easily map the start and stop codon positions to 
   149      |    rna-DGYR_LOCUS12552-2  637      640      +         stop
   PyRanges with 56 rows, 5 columns, and 1 index columns.
   Contains 17 chromosomes and 1 strands.
+
+Implementation and coordinate bounds
+------------------------------------
+
+``map_to_global`` uses the Rust projection engine, which sorts query and exon
+coordinates internally and restores original input order. Negative local
+offsets count from the end of the transcript, and portions outside transcript
+coverage are omitted. Identifiers reused across chromosomes or strands retain
+the pandas implementation because each locus has a separate local coordinate
+system.

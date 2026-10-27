@@ -4,7 +4,7 @@ import re
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-MIN_RURANGES_VERSION = "0.1.5"
+MIN_RURANGES_VERSION = "0.2.9"
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:

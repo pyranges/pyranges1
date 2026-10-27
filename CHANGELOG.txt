@@ -1,3 +1,6 @@
+# Unreleased
+- Project transcript queries through Rust, retaining original query/exon order, indices, strand composition and optional metadata. Negative offsets retain their transcript-end interpretation. References whose ids span multiple chromosomes or strands retain the pandas path. Requires ruranges >= 0.2.9.
+
 # 1.5.1 (25.10.26)
 - Fix the readers under pandas 3.1, which infers the categories of a `"category"` column in `read_csv`: a chromosome named `1` came back as the integer `1` (and `01` merged with it). BED, GFF3, peak and signal files are now read as text and made categorical after; GTF needs gtfreader >= 0.3.1
 - Fix `ValueError`/`TypeError: The given array is not contiguous` from most range operations on frames whose columns are strided views (pandas >= 3.1 can return them; coordinates past int32 always reached the kernels uncopied); requires ruranges >= 0.2.8
