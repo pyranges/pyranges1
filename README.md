@@ -23,7 +23,7 @@ available at https://pyranges1.readthedocs.io/
 
 ```
 # Unreleased
-- Honor grouping columns in multi-PyRanges overlap counts (gh-PRNUM).
+- Honor grouping columns in multi-PyRanges overlap counts (gh-216).
 
 # 1.5.2 (27.10.26)
 - Project transcript queries through Rust, retaining original query/exon order, indices, strand composition and optional metadata. Negative offsets retain their transcript-end interpretation. References whose ids span multiple chromosomes or strands retain the pandas path. Requires ruranges >= 0.2.9.
