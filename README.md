@@ -23,7 +23,7 @@ available at https://pyranges1.readthedocs.io/
 
 ```
 # Unreleased
-- Preserve unfiltered sites and semicolon-separated filter codes in VCF and BCF (gh-PRNUM).
+- Preserve unfiltered sites and semicolon-separated filter codes in VCF and BCF (gh-217).
 
 # 1.5.2 (27.10.26)
 - Project transcript queries through Rust, retaining original query/exon order, indices, strand composition and optional metadata. Negative offsets retain their transcript-end interpretation. References whose ids span multiple chromosomes or strands retain the pandas path. Requires ruranges >= 0.2.9.
