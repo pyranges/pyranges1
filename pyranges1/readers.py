@@ -2174,7 +2174,8 @@ def read_vcf(
     -------
     PyRanges
         Columns: Chromosome, Start, End, ID, REF, ALT, QUAL, FILTER, plus one
-        column per requested INFO field.
+        column per requested INFO field. FILTER preserves the VCF convention:
+        "." for unfiltered sites, "PASS" for sites that passed, and semicolon-separated failure codes.
 
     Notes
     -----
@@ -2219,7 +2220,7 @@ def read_vcf(
         refs.append(rec.ref or "")
         alts.append(",".join(a for a in rec.alts if a is not None) if rec.alts else None)
         quals.append(rec.qual)
-        filters.append(",".join(str(k) for k in rec.filter) if rec.filter else "PASS")
+        filters.append(";".join(str(code) for code in rec.filter) or ".")
 
         keys = info_fields if info_fields is not None else list(rec.info.keys())
         for k in keys:
