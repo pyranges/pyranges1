@@ -99,3 +99,31 @@ def test_read_vcf() -> None:
     assert len(pr.read_vcf(vcf, nrows=2)) == 2
     assert "DP" not in pr.read_vcf(vcf, info_fields=[]).columns
     Path(vcf).unlink()
+
+
+@pytest.mark.parametrize("suffix", [".vcf", ".bcf"])
+def test_read_vcf_preserves_filter_status(tmp_path, suffix: str) -> None:
+    pysam = pytest.importorskip("pysam")
+    path = tmp_path / "variants.vcf"
+    path.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=1,length=1000>\n"
+        '##FILTER=<ID=q10,Description="Quality below 10">\n'
+        '##FILTER=<ID=s50,Description="Fewer than 50 percent of samples have data">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "1\t100\t.\tA\tG\t50\t.\t.\n"
+        "1\t101\t.\tT\tC\t50\tPASS\t.\n"
+        "1\t102\t.\tA\tG\t5\tq10\t.\n"
+        "1\t103\t.\tA\tG\t5\tq10;s50\t.\n"
+    )
+    if suffix == ".bcf":
+        bcf = path.with_suffix(suffix)
+        with pysam.VariantFile(path) as source, pysam.VariantFile(bcf, "wb", header=source.header) as target:
+            for record in source:
+                target.write(record)
+        path = bcf
+
+    variants = pr.read_vcf(path)
+
+    assert variants["FILTER"].tolist() == [".", "PASS", "q10", "q10;s50"]
+    assert variants.loc[variants["FILTER"] == "PASS", "Start"].tolist() == [100]
