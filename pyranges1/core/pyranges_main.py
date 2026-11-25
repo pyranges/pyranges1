@@ -3715,7 +3715,7 @@ class PyRanges(RangeFrame):
         The output does not contain overlapping intervals, but intervals that are adjacent are not merged.
         Every output interval descends from an input interval and keeps its metadata. With
         ``between=True`` the gap intervals descend from no input row, so only the location
-        columns are output; ``Strand`` is among them only when it was a grouping key.
+        and grouping columns are output. ``Strand`` is kept only when it was a grouping key.
 
         Parameters
         ----------
@@ -3848,11 +3848,9 @@ class PyRanges(RangeFrame):
 
         res = ensure_pyranges(self.take(idxs).reset_index(drop=True))
         if between:
-            # A gap row descends from no input row, so it carries no metadata; and if
-            # Strand was not a grouping key the gap spans both strands, so no strand
-            # label applies to it either.
-            res = res.remove_nonloc_columns()
-            if not use_strand:
+            # Gaps have a grouping key but no originating row's other metadata.
+            res = res.get_with_loc_columns([col for col in by if col not in GENOME_LOC_COLS_WITH_STRAND])
+            if STRAND_COL not in by:
                 res = res.remove_strand()
 
         res.loc[:, START_COL] = starts

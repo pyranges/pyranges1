@@ -34,7 +34,8 @@ def count_overlaps(
         reports intervals where the overlapping is contained within it.
 
     by : list of str, default None
-        Columns to group by.
+        Columns that must match between features and queries to count an overlap.
+        If features is None, the inferred features are split within each group.
 
     Examples
     --------
@@ -131,11 +132,11 @@ def count_overlaps(
 
     """
     concated = concat.concat(grs.values())
-    _features = concated.split_overlaps(between=True) if features is None else features.copy()
+    _features = concated.split_overlaps(between=True, match_by=by) if features is None else features.copy()
 
     for name, gr in grs.items():
         counts = _features._count_overlaps(  # noqa: SLF001
-            gr.remove_nonloc_columns(),
+            gr,
             match_by=by,
             strand_behavior=strand_behavior,
         )

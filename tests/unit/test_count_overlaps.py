@@ -56,3 +56,28 @@ chr1 30 40  - 0 0 1""",
 #     res.print(merge_position=True)
 
 #     assert_df_equal(res.df, expected_result.df)
+
+
+def test_count_overlaps_matches_metadata_on_supplied_features() -> None:
+    targets = pr.PyRanges({"Chromosome": "chr1", "Start": [0, 0, 0], "End": 6, "Sample": ["A", "B", "C"]})
+    a = pr.PyRanges({"Chromosome": "chr1", "Start": [1, 2, 7], "End": [2, 4, 9], "Sample": ["A", "A", "B"]})
+    b = pr.PyRanges({"Chromosome": "chr1", "Start": [0, 7], "End": [4, 9], "Sample": ["B", "A"]})
+
+    result = pr.count_overlaps({"a": a, "b": b}, targets, by=["Sample"])
+
+    assert result[["Sample", "a", "b"]].values.tolist() == [["A", 2, 0], ["B", 0, 1], ["C", 0, 0]]
+
+
+def test_count_overlaps_matches_metadata_on_inferred_features() -> None:
+    a = pr.PyRanges({"Chromosome": "chr1", "Start": [0, 4], "End": [2, 6], "Sample": "A"})
+    b = pr.PyRanges({"Chromosome": ["chr1"], "Start": [1], "End": [5], "Sample": "B"})
+
+    result = pr.count_overlaps({"a": a, "b": b}, by=["Sample"])
+
+    rows = result[["Sample", "Start", "End", "a", "b"]].sort_values(["Sample", "Start"])
+    assert rows.values.tolist() == [
+        ["A", 0, 2, 1, 0],
+        ["A", 2, 4, 0, 0],
+        ["A", 4, 6, 1, 0],
+        ["B", 1, 5, 0, 1],
+    ]
