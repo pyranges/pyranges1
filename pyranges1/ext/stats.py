@@ -591,7 +591,9 @@ def simes(
         Name of column with p-values.
 
     keep_position : bool, default False
-        Keep columns "Chromosome", "Start", "End" and "Strand" if they exist.
+        Include the genomic span of each group and its strand, if present.
+        Simes p-values are calculated using the grouping columns in ``by`` for
+        either value of ``keep_position``.
 
     See Also
     --------
@@ -631,8 +633,8 @@ def simes(
       index  |      Chromosome    Start      End      Simes  Strand    Gene
       int64  |           int64    int64    int64    float64  str       str
     -------  ---  ------------  -------  -------  ---------  --------  ------
-          0  |               2       60       90     1e-07   -         FOX
-          1  |               1       10       40     0.0001  +         P53
+          0  |               2       60       90     3e-07   -         FOX
+          1  |               1       10       40     0.0003  +         P53
     PyRanges with 2 rows, 6 columns, and 1 index columns.
     Contains 2 chromosomes and 2 strands.
 
@@ -650,7 +652,7 @@ def simes(
     sorter = [*by, pcol]
 
     sdf = df[positions + sorter].sort_values(sorter)
-    g = sdf.groupby(positions + by)
+    g = sdf.groupby(by)
 
     ranks = g.cumcount().to_numpy() + 1
     size = g.size().to_numpy()
