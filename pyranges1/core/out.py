@@ -348,8 +348,13 @@ def _attribute_column(rest_df: pd.DataFrame, out_format: Literal["gtf", "gff3"])
     for name in rest_df.columns:
         column = rest_df[name]
         text = column.astype(str)
-        entry = (f'{name} "' + text + '"; ') if out_format == "gtf" else (f"{name}=" + text + ";")
-        attribute = attribute + entry.where(column.notna(), "")
+        if out_format == 'gtf':
+            if name == 'tag':
+                text = text.str.replace(',', '"; tag "', regex=False)
+            entry = f'{name} "' + text + '"; '
+        else:
+            entry = f'{name}=' + text + ';'
+        attribute = attribute + entry.where(column.notna(), '')
     return attribute.str.replace(" $" if out_format == "gtf" else ";$", "", regex=True)
 
 
